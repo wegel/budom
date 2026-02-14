@@ -1260,31 +1260,54 @@ impl Supervisor {
                 }
                 IpcResponse::ok(json!({"proto":1,"version":"budom 0.1.0","pid":process::id()}))
             }
-            IpcRequest::Run { id } => match self.start_if_needed(&id).await {
-                Ok(()) => {
-                    let Some(job) = self.jobs.get(&id) else {
-                        return IpcResponse::err("not_found", "job missing");
-                    };
-                    IpcResponse::ok(json!({"id":id,"name":job.meta.name,"pid":job.status.pid}))
+            IpcRequest::Run { id } => {
+                if let Some(job) = self.jobs.get(&id)
+                    && job.runtime.is_none()
+                    && matches!(job.status.state, StatusState::Exited)
+                    && matches!(job.meta.restart.policy, RestartPolicy::No)
+                    && job.status.last_exit.is_some()
+                {
+                    return IpcResponse::ok(
+                        json!({"id":id,"name":job.meta.name,"pid":job.status.pid}),
+                    );
                 }
-                Err(e) if e.to_string().contains("unknown job id") => {
-                    if let Err(load_err) = self.load_job_from_disk(&id, false) {
-                        return IpcResponse::err("not_found", load_err.to_string());
+
+                match self.start_if_needed(&id).await {
+                    Ok(()) => {
+                        let Some(job) = self.jobs.get(&id) else {
+                            return IpcResponse::err("not_found", "job missing");
+                        };
+                        IpcResponse::ok(json!({"id":id,"name":job.meta.name,"pid":job.status.pid}))
                     }
-                    match self.start_if_needed(&id).await {
-                        Ok(()) => {
-                            let Some(job) = self.jobs.get(&id) else {
-                                return IpcResponse::err("not_found", "job missing");
-                            };
-                            IpcResponse::ok(
-                                json!({"id":id,"name":job.meta.name,"pid":job.status.pid}),
-                            )
+                    Err(e) if e.to_string().contains("unknown job id") => {
+                        if let Err(load_err) = self.load_job_from_disk(&id, false) {
+                            return IpcResponse::err("not_found", load_err.to_string());
                         }
-                        Err(inner) => IpcResponse::err("os", inner.to_string()),
+                        if let Some(job) = self.jobs.get(&id)
+                            && job.runtime.is_none()
+                            && matches!(job.status.state, StatusState::Exited)
+                            && matches!(job.meta.restart.policy, RestartPolicy::No)
+                            && job.status.last_exit.is_some()
+                        {
+                            return IpcResponse::ok(
+                                json!({"id":id,"name":job.meta.name,"pid":job.status.pid}),
+                            );
+                        }
+                        match self.start_if_needed(&id).await {
+                            Ok(()) => {
+                                let Some(job) = self.jobs.get(&id) else {
+                                    return IpcResponse::err("not_found", "job missing");
+                                };
+                                IpcResponse::ok(
+                                    json!({"id":id,"name":job.meta.name,"pid":job.status.pid}),
+                                )
+                            }
+                            Err(inner) => IpcResponse::err("os", inner.to_string()),
+                        }
                     }
+                    Err(e) => IpcResponse::err("os", e.to_string()),
                 }
-                Err(e) => IpcResponse::err("os", e.to_string()),
-            },
+            }
             IpcRequest::Ps { all } => {
                 let mut rows = Vec::new();
                 for (id, job) in &self.jobs {
@@ -1617,21 +1640,71 @@ fn load_all_rows(paths: &Paths, all: bool) -> Result<Vec<PsRow>> {
     Ok(rows)
 }
 
-fn print_ps(rows: &[PsRow]) {
-    println!("ID\tNAME\tDESIRED\tSTATE\tPID\tRESTARTS");
-    for r in rows {
-        println!(
-            "{}\t{}\t{:?}\t{:?}\t{}\t{}",
-            &r.id[..8.min(r.id.len())],
-            r.name.clone().unwrap_or_else(|| "-".to_string()),
-            r.desired,
-            r.state,
-            r.pid
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            r.restart_count
-        );
+fn desired_display(desired: &DesiredState) -> &'static str {
+    match desired {
+        DesiredState::Running => "Running",
+        DesiredState::Stopped => "Stopped",
     }
+}
+
+fn status_display(state: &StatusState) -> &'static str {
+    match state {
+        StatusState::Starting => "Starting",
+        StatusState::Running => "Running",
+        StatusState::Stopping => "Stopping",
+        StatusState::Exited => "Exited",
+        StatusState::Backoff => "Backoff",
+        StatusState::Error => "Error",
+        StatusState::Stale => "Stale",
+    }
+}
+
+fn format_ps_rows(rows: &[PsRow]) -> String {
+    let mut data = Vec::with_capacity(rows.len());
+    let mut w_id = "ID".len();
+    let mut w_name = "NAME".len();
+    let mut w_desired = "DESIRED".len();
+    let mut w_state = "STATE".len();
+    let mut w_pid = "PID".len();
+    let mut w_restarts = "RESTARTS".len();
+
+    for r in rows {
+        let id = r.id[..8.min(r.id.len())].to_string();
+        let name = r.name.clone().unwrap_or_else(|| "-".to_string());
+        let desired = desired_display(&r.desired).to_string();
+        let state = status_display(&r.state).to_string();
+        let pid = r
+            .pid
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let restarts = r.restart_count.to_string();
+
+        w_id = w_id.max(id.len());
+        w_name = w_name.max(name.len());
+        w_desired = w_desired.max(desired.len());
+        w_state = w_state.max(state.len());
+        w_pid = w_pid.max(pid.len());
+        w_restarts = w_restarts.max(restarts.len());
+
+        data.push((id, name, desired, state, pid, restarts));
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{:<w_id$}  {:<w_name$}  {:<w_desired$}  {:<w_state$}  {:<w_pid$}  {:<w_restarts$}\n",
+        "ID", "NAME", "DESIRED", "STATE", "PID", "RESTARTS"
+    ));
+    for (id, name, desired, state, pid, restarts) in data {
+        out.push_str(&format!(
+            "{:<w_id$}  {:<w_name$}  {:<w_desired$}  {:<w_state$}  {:<w_pid$}  {:<w_restarts$}\n",
+            id, name, desired, state, pid, restarts
+        ));
+    }
+    out
+}
+
+fn print_ps(rows: &[PsRow]) {
+    print!("{}", format_ps_rows(rows));
 }
 
 fn load_inspect(paths: &Paths, r: &str) -> Result<Value> {
@@ -2281,4 +2354,50 @@ fn run_cli(cli: Cli) -> i32 {
 fn main() {
     let cli = Cli::parse();
     process::exit(run_cli(cli));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ps_output_is_aligned_with_missing_names() {
+        let rows = vec![
+            PsRow {
+                id: "01abcdef1234567890".to_string(),
+                name: None,
+                desired: DesiredState::Running,
+                state: StatusState::Running,
+                pid: Some(12),
+                restart_count: 0,
+            },
+            PsRow {
+                id: "01b".to_string(),
+                name: Some("longer-name".to_string()),
+                desired: DesiredState::Stopped,
+                state: StatusState::Exited,
+                pid: None,
+                restart_count: 12,
+            },
+        ];
+
+        let out = format_ps_rows(&rows);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3);
+
+        let header = lines[0];
+        let name_col = header.find("NAME").expect("NAME column");
+        let desired_col = header.find("DESIRED").expect("DESIRED column");
+        let state_col = header.find("STATE").expect("STATE column");
+        let pid_col = header.find("PID").expect("PID column");
+        let restarts_col = header.find("RESTARTS").expect("RESTARTS column");
+
+        for line in &lines[1..] {
+            assert_ne!(line.as_bytes()[name_col], b' ');
+            assert_ne!(line.as_bytes()[desired_col], b' ');
+            assert_ne!(line.as_bytes()[state_col], b' ');
+            assert_ne!(line.as_bytes()[pid_col], b' ');
+            assert_ne!(line.as_bytes()[restarts_col], b' ');
+        }
+    }
 }
