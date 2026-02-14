@@ -344,3 +344,19 @@ fn id_is_lowercase_and_one_char_prefix_resolves_when_unique() {
     env.run_ok(&["stop", &id, "--timeout", "2s"]);
     env.run_ok(&["rm", &id, "--force"]);
 }
+
+#[test]
+fn rm_accepts_multiple_refs() {
+    let env = TestEnv::new();
+
+    env.run_ok(&["run", "--name", "ra", "--", "/bin/sh", "-c", "sleep 30"]);
+    env.run_ok(&["run", "--name", "rb", "--", "/bin/sh", "-c", "sleep 30"]);
+
+    env.run_ok(&["stop", "ra", "rb", "--timeout", "2s"]);
+    env.run_ok(&["rm", "ra", "rb", "--force"]);
+
+    let a = env.run(&["inspect", "ra"]);
+    let b = env.run(&["inspect", "rb"]);
+    assert_eq!(a.status.code(), Some(3));
+    assert_eq!(b.status.code(), Some(3));
+}

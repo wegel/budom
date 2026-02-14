@@ -351,7 +351,8 @@ enum Commands {
         timeout: Option<String>,
     },
     Rm {
-        r#ref: String,
+        #[arg(required = true, num_args = 1..)]
+        refs: Vec<String>,
         #[arg(long)]
         force: bool,
     },
@@ -2214,36 +2215,47 @@ fn run_cli(cli: Cli) -> i32 {
 
             rc
         }
-        Commands::Rm { r#ref, force } => match send_ipc(
-            &paths,
-            &IpcRequest::Rm {
-                r#ref: r#ref.clone(),
-                force,
-            },
-        ) {
-            Ok(resp) if resp.ok => EXIT_OK,
-            Ok(resp) => {
-                eprintln!(
-                    "{}",
-                    resp.message
-                        .clone()
-                        .unwrap_or_else(|| "rm failed".to_string())
-                );
-                map_ipc_error_to_exit(&resp)
-            }
-            Err(_) => match rm_offline(&paths, &r#ref, force) {
-                Ok(()) => EXIT_OK,
-                Err(e) => {
-                    let msg = e.to_string();
-                    eprintln!("{msg}");
-                    if msg.contains("--force") {
-                        EXIT_INVALID_STATE
-                    } else {
-                        EXIT_NOT_FOUND
+        Commands::Rm { refs, force } => {
+            let mut rc = EXIT_OK;
+            for r in refs {
+                match send_ipc(
+                    &paths,
+                    &IpcRequest::Rm {
+                        r#ref: r.clone(),
+                        force,
+                    },
+                ) {
+                    Ok(resp) if resp.ok => {}
+                    Ok(resp) => {
+                        eprintln!(
+                            "{}: {}",
+                            r,
+                            resp.message
+                                .clone()
+                                .unwrap_or_else(|| "rm failed".to_string())
+                        );
+                        if rc == EXIT_OK {
+                            rc = map_ipc_error_to_exit(&resp);
+                        }
                     }
+                    Err(_) => match rm_offline(&paths, &r, force) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            let msg = e.to_string();
+                            eprintln!("{r}: {msg}");
+                            if rc == EXIT_OK {
+                                rc = if msg.contains("--force") {
+                                    EXIT_INVALID_STATE
+                                } else {
+                                    EXIT_NOT_FOUND
+                                };
+                            }
+                        }
+                    },
                 }
-            },
-        },
+            }
+            rc
+        }
         Commands::Gc => match send_ipc(&paths, &IpcRequest::Gc) {
             Ok(resp) if resp.ok => EXIT_OK,
             Ok(resp) => {
