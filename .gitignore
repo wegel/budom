@@ -1,0 +1,28 @@
+# Rust build artifacts
+/target/
+
+# Backup files
+*.rs.bk
+*~
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Editor / IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
+# Local env overrides
+.env
+.env.*
+
+# Keep Cargo.lock tracked for this binary crate
+!Cargo.lock
