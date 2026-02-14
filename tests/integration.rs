@@ -360,3 +360,75 @@ fn rm_accepts_multiple_refs() {
     assert_eq!(a.status.code(), Some(3));
     assert_eq!(b.status.code(), Some(3));
 }
+
+#[test]
+fn replace_graceful_sends_term_before_removal() {
+    let env = TestEnv::new();
+    let marker = env.data.join("term-graceful.txt");
+    let script = format!(
+        "trap 'echo term >> {} ; exit 0' TERM; while true; do sleep 1; done",
+        marker.display()
+    );
+
+    env.run_ok(&["run", "--name", "svc", "--", "/bin/sh", "-c", &script]);
+
+    env.wait_for(Duration::from_secs(3), || {
+        let v = env.inspect_json("svc");
+        v["status"]["state"] == Value::String("running".to_string())
+    });
+
+    env.run_ok(&[
+        "run",
+        "--name",
+        "svc",
+        "--replace",
+        "--replace-timeout",
+        "2s",
+        "--",
+        "/bin/true",
+    ]);
+
+    env.wait_for(Duration::from_secs(3), || marker.exists());
+    let text = fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        text.contains("term"),
+        "graceful replace should deliver TERM, marker content: {text}"
+    );
+
+    env.run_ok(&["rm", "svc", "--force"]);
+}
+
+#[test]
+fn replace_force_skips_graceful_term() {
+    let env = TestEnv::new();
+    let marker = env.data.join("term-force.txt");
+    let script = format!(
+        "trap 'echo term >> {} ; exit 0' TERM; while true; do sleep 1; done",
+        marker.display()
+    );
+
+    env.run_ok(&["run", "--name", "svc", "--", "/bin/sh", "-c", &script]);
+
+    env.wait_for(Duration::from_secs(3), || {
+        let v = env.inspect_json("svc");
+        v["status"]["state"] == Value::String("running".to_string())
+    });
+
+    env.run_ok(&[
+        "run",
+        "--name",
+        "svc",
+        "--replace",
+        "--force",
+        "--",
+        "/bin/true",
+    ]);
+
+    thread::sleep(Duration::from_millis(600));
+    assert!(
+        !marker.exists(),
+        "forced replace should not allow TERM trap marker"
+    );
+
+    env.run_ok(&["rm", "svc", "--force"]);
+}

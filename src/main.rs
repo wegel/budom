@@ -317,6 +317,10 @@ enum Commands {
         log_max_files: Option<u32>,
         #[arg(long)]
         replace: bool,
+        #[arg(long, requires = "replace")]
+        force: bool,
+        #[arg(long, requires = "replace")]
+        replace_timeout: Option<String>,
         #[arg(required = true, trailing_var_arg = true)]
         cmd: Vec<String>,
     },
@@ -629,14 +633,20 @@ fn resolve_name_to_id(paths: &Paths, name: &str) -> Result<Option<String>> {
 }
 
 fn resolve_meta_name_to_id(paths: &Paths, name: &str) -> Result<Option<String>> {
+    Ok(list_named_job_ids(paths, name)?.into_iter().next())
+}
+
+fn list_named_job_ids(paths: &Paths, name: &str) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
     for id in list_job_ids(paths)? {
         if let Ok(meta) = load_meta(paths, &id)
             && meta.name.as_deref() == Some(name)
         {
-            return Ok(Some(id));
+            ids.push(id);
         }
     }
-    Ok(None)
+    ids.sort();
+    Ok(ids)
 }
 
 fn link_name(paths: &Paths, name: &str, id: &str) -> Result<()> {
@@ -1900,25 +1910,50 @@ fn gc_impl(paths: &Paths) -> Result<usize> {
     Ok(removed)
 }
 
-fn maybe_replace_name(paths: &Paths, name: &str) -> Result<()> {
-    if let Some(existing) = resolve_name_to_id(paths, name)?
-        && paths.job_dir(&existing).exists()
-    {
+fn replace_existing_id(paths: &Paths, existing: &str, force: bool, timeout_ms: u64) -> Result<()> {
+    if !paths.job_dir(existing).exists() {
+        return Ok(());
+    }
+
+    if !force {
         if let Ok(resp) = send_ipc(
             paths,
-            &IpcRequest::Rm {
-                r#ref: existing.clone(),
-                force: true,
+            &IpcRequest::Stop {
+                r#ref: existing.to_string(),
+                signal: "TERM".to_string(),
+                timeout_ms,
             },
         ) {
             if !resp.ok {
-                bail!(resp.message.unwrap_or_else(|| "replace failed".to_string()));
+                bail!(
+                    "{}",
+                    resp.message
+                        .unwrap_or_else(|| "replace stop failed".to_string())
+                );
             }
-            return Ok(());
+        } else {
+            stop_offline(paths, existing, Signal::SIGTERM, timeout_ms)?;
         }
-        rm_offline(paths, &existing, true)?;
     }
-    Ok(())
+
+    if let Ok(resp) = send_ipc(
+        paths,
+        &IpcRequest::Rm {
+            r#ref: existing.to_string(),
+            force: true,
+        },
+    ) {
+        if !resp.ok {
+            bail!(
+                "{}",
+                resp.message
+                    .unwrap_or_else(|| "replace rm failed".to_string())
+            );
+        }
+        return Ok(());
+    }
+
+    rm_offline(paths, existing, true)
 }
 
 fn run_cli(cli: Cli) -> i32 {
@@ -1967,27 +2002,43 @@ fn run_cli(cli: Cli) -> i32 {
             log_max_size_mb,
             log_max_files,
             replace,
+            force,
+            replace_timeout,
             cmd,
         } => {
+            let replace_timeout_ms = match parse_timeout_ms(replace_timeout.as_deref()) {
+                Ok(ms) => ms,
+                Err(e) => {
+                    eprintln!("{e:#}");
+                    return EXIT_USAGE;
+                }
+            };
+
             if let Some(n) = &name {
                 if !is_valid_name(n) {
                     eprintln!("invalid name; regex: [A-Za-z0-9][A-Za-z0-9_.-]{{0,63}}");
                     return EXIT_USAGE;
                 }
-                match resolve_name_to_id(&paths, n) {
-                    Ok(Some(existing)) => {
-                        if paths.job_dir(&existing).exists() {
+                match list_named_job_ids(&paths, n) {
+                    Ok(existing_ids) => {
+                        if !existing_ids.is_empty() {
                             if !replace {
                                 eprintln!("name conflict: {n}");
                                 return EXIT_CONFLICT;
                             }
-                            if let Err(e) = maybe_replace_name(&paths, n) {
-                                eprintln!("{e:#}");
-                                return EXIT_OS;
+                            for existing in existing_ids {
+                                if let Err(e) = replace_existing_id(
+                                    &paths,
+                                    &existing,
+                                    force,
+                                    replace_timeout_ms,
+                                ) {
+                                    eprintln!("{e:#}");
+                                    return EXIT_OS;
+                                }
                             }
                         }
                     }
-                    Ok(None) => {}
                     Err(e) => {
                         eprintln!("{e:#}");
                         return EXIT_OS;
