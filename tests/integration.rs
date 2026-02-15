@@ -104,6 +104,24 @@ fn parse_run_id(stdout: &str) -> String {
     stdout.lines().next().unwrap_or_default().trim().to_string()
 }
 
+fn flip_first_alpha_case(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut flipped = false;
+    for ch in s.chars() {
+        if !flipped && ch.is_ascii_alphabetic() {
+            if ch.is_ascii_lowercase() {
+                out.push(ch.to_ascii_uppercase());
+            } else {
+                out.push(ch.to_ascii_lowercase());
+            }
+            flipped = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    if flipped { Some(out) } else { None }
+}
+
 fn write_json(path: &Path, value: &Value) {
     fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
 }
@@ -317,19 +335,23 @@ fn stop_accepts_multiple_refs() {
 }
 
 #[test]
-fn id_is_lowercase_and_one_char_prefix_resolves_when_unique() {
+fn id_is_base58_len12_and_one_char_prefix_resolves_when_unique() {
     let env = TestEnv::new();
 
-    let out = env.run_ok(&["run", "--", "/bin/sh", "-c", "sleep 30"]);
-    let id = parse_run_id(&out);
-    assert_eq!(id.len(), 26, "id must be ulid length");
-    assert!(
-        id.chars()
-            .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()),
-        "id should be lowercase: {id}"
-    );
+    let out_a = env.run_ok(&["run", "--", "/bin/sh", "-c", "sleep 30"]);
+    let id_a = parse_run_id(&out_a);
+    let out_b = env.run_ok(&["run", "--", "/bin/sh", "-c", "sleep 30"]);
+    let id_b = parse_run_id(&out_b);
 
-    let prefix = &id[..1];
+    assert_eq!(id_a.len(), 12, "id must be 12 chars");
+    assert!(
+        id_a.chars()
+            .all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c)),
+        "id should be base58: {id_a}"
+    );
+    assert_ne!(id_a, id_b, "generated ids should be distinct");
+
+    let prefix = &id_a[..1];
     let inspect = env.run(&["inspect", prefix, "--json"]);
     assert_eq!(
         inspect.status.code(),
@@ -339,7 +361,37 @@ fn id_is_lowercase_and_one_char_prefix_resolves_when_unique() {
         String::from_utf8_lossy(&inspect.stderr)
     );
     let payload: Value = serde_json::from_slice(&inspect.stdout).unwrap();
-    assert_eq!(payload["id"], Value::String(id.clone()));
+    assert_eq!(payload["id"], Value::String(id_a.clone()));
+
+    env.run_ok(&["stop", &id_a, "--timeout", "2s"]);
+    env.run_ok(&["rm", &id_a, "--force"]);
+    env.run_ok(&["stop", &id_b, "--timeout", "2s"]);
+    env.run_ok(&["rm", &id_b, "--force"]);
+}
+
+#[test]
+fn id_resolution_is_case_sensitive() {
+    let env = TestEnv::new();
+
+    let out = env.run_ok(&["run", "--", "/bin/sh", "-c", "sleep 30"]);
+    let id = parse_run_id(&out);
+    let flipped = match flip_first_alpha_case(&id) {
+        Some(v) => v,
+        None => {
+            env.run_ok(&["stop", &id, "--timeout", "2s"]);
+            env.run_ok(&["rm", &id, "--force"]);
+            return;
+        }
+    };
+
+    let inspect = env.run(&["inspect", &flipped, "--json"]);
+    assert_eq!(
+        inspect.status.code(),
+        Some(3),
+        "case-changed id should not resolve\\nstdout={}\\nstderr={}",
+        String::from_utf8_lossy(&inspect.stdout),
+        String::from_utf8_lossy(&inspect.stderr)
+    );
 
     env.run_ok(&["stop", &id, "--timeout", "2s"]);
     env.run_ok(&["rm", &id, "--force"]);

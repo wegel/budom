@@ -313,18 +313,14 @@ pub(super) fn resolve_ref(paths: &Paths, r: &str) -> Result<String> {
     }
 
     let ids = list_job_ids(paths)?;
-    let r_lower = r.to_ascii_lowercase();
 
     for id in &ids {
-        if id.eq_ignore_ascii_case(&r_lower) || id.eq_ignore_ascii_case(r) {
+        if id == r {
             return Ok(id.clone());
         }
     }
 
-    let matches: Vec<String> = ids
-        .into_iter()
-        .filter(|id| id.to_ascii_lowercase().starts_with(&r_lower))
-        .collect();
+    let matches: Vec<String> = ids.into_iter().filter(|id| id.starts_with(r)).collect();
     if matches.len() == 1 {
         return Ok(matches[0].clone());
     }

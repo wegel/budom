@@ -5,6 +5,8 @@ use fs2::FileExt;
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::{Pid, setsid};
+use rand::RngCore;
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -19,7 +21,6 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream as TokioUnixStream};
 use tokio::process::{Child, Command as TokioCommand};
-use ulid::Ulid;
 
 const EXIT_OK: i32 = 0;
 const EXIT_USAGE: i32 = 2;

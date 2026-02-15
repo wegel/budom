@@ -2,11 +2,50 @@ use super::ops::*;
 use super::supervisor::{NewJobSpec, ensure_supervisor, send_ipc, supervisor_main};
 use super::*;
 
+const ID_ALPHABET_BASE58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const ID_LEN: usize = 12;
+const MAX_ID_RETRIES: usize = 128;
+
+fn random_base58_id(len: usize) -> String {
+    let mut out = String::with_capacity(len);
+    let mut rng = OsRng;
+    let mut buf = [0u8; 32];
+
+    while out.len() < len {
+        rng.fill_bytes(&mut buf);
+        for b in &buf {
+            // Rejection sampling keeps character distribution uniform over 58 symbols.
+            if *b < 232 {
+                out.push(ID_ALPHABET_BASE58[(b % 58) as usize] as char);
+                if out.len() == len {
+                    break;
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn reserve_job_id(paths: &Paths) -> Result<String> {
+    for _ in 0..MAX_ID_RETRIES {
+        let id = random_base58_id(ID_LEN);
+        match fs::create_dir(paths.job_dir(&id)) {
+            Ok(()) => return Ok(id),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    bail!(
+        "failed to allocate unique job id after {} attempts",
+        MAX_ID_RETRIES
+    )
+}
+
 fn create_job(paths: &Paths, spec: NewJobSpec) -> Result<String> {
-    let id = Ulid::new().to_string().to_ascii_lowercase();
+    let id = reserve_job_id(paths)?;
     let created_at = now_rfc3339();
 
-    fs::create_dir_all(paths.job_dir(&id))?;
     File::create(paths.lock_path(&id))?;
 
     let (uid, gid) = current_uid_gid();
@@ -900,6 +939,23 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_base58_id_has_expected_len_and_charset() {
+        let id = random_base58_id(ID_LEN);
+        assert_eq!(id.len(), ID_LEN);
+        assert!(
+            id.chars()
+                .all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c))
+        );
+    }
+
+    #[test]
+    fn random_base58_id_is_not_constant() {
+        let a = random_base58_id(ID_LEN);
+        let b = random_base58_id(ID_LEN);
+        assert_ne!(a, b);
+    }
 
     #[test]
     fn ps_output_is_aligned_with_missing_names() {
