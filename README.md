@@ -8,6 +8,7 @@ It provides:
 - restart policies with exponential backoff
 - raw stdout/stderr log capture and size-based rotation
 - stable job names and short/partial ID references
+- tag-based targeting for bulk stop/remove operations
 
 ## Build
 
@@ -59,12 +60,42 @@ Remove job state:
 budom rm demo --force
 ```
 
+Run with tags:
+
+```bash
+budom run --name api-a --tag api --tag blue -- /bin/sh -lc 'sleep 9999'
+```
+
+Filter by tags:
+
+```bash
+budom ps --tag api --tag blue
+```
+
+Stop/remove by tags:
+
+```bash
+budom stop --tag api --tag blue
+budom rm tag:api --force
+```
+
+Replace an existing named daemon:
+
+```bash
+# Graceful replace: TERM, wait (default 10s), then KILL if needed
+budom run --name api-a --replace --replace-timeout 15s -- /path/to/new-binary
+
+# Force replace: immediate forced removal of old daemon
+budom run --name api-a --replace --force -- /path/to/new-binary
+```
+
 ## ID and Ref Resolution
 
 Commands that take a `<ref>` accept:
 1. exact name
 2. exact full ID (case-insensitive)
 3. unique ID prefix (including 1 character if unique)
+4. `tag:<tag>` selectors (for commands supporting multi-target refs, like `stop`/`rm`)
 
 If a prefix is ambiguous, the command fails with an ambiguity error.
 
