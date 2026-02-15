@@ -432,3 +432,41 @@ fn replace_force_skips_graceful_term() {
 
     env.run_ok(&["rm", "svc", "--force"]);
 }
+
+#[test]
+fn tags_can_filter_ps_and_target_stop_rm() {
+    let env = TestEnv::new();
+
+    env.run_ok(&[
+        "run", "--name", "ta", "--tag", "api", "--tag", "blue", "--", "/bin/sh", "-c", "sleep 30",
+    ]);
+    env.run_ok(&[
+        "run", "--name", "tb", "--tag", "api", "--tag", "red", "--", "/bin/sh", "-c", "sleep 30",
+    ]);
+    env.run_ok(&[
+        "run", "--name", "tc", "--tag", "worker", "--", "/bin/sh", "-c", "sleep 30",
+    ]);
+
+    let ps_api = env.run_ok(&["ps", "--json", "--tag", "api"]);
+    let rows_api: Value = serde_json::from_str(&ps_api).unwrap();
+    assert_eq!(rows_api.as_array().unwrap().len(), 2);
+
+    env.run_ok(&["stop", "--tag", "api", "--tag", "blue", "--timeout", "2s"]);
+    env.wait_for(Duration::from_secs(5), || {
+        let ta = env.inspect_json("ta");
+        ta["status"]["state"] == Value::String("exited".to_string())
+    });
+
+    env.run_ok(&["rm", "tag:api", "--force"]);
+    assert_eq!(env.run(&["inspect", "ta"]).status.code(), Some(3));
+    assert_eq!(env.run(&["inspect", "tb"]).status.code(), Some(3));
+
+    let tc = env.inspect_json("tc");
+    assert_eq!(
+        tc["meta"]["tags"],
+        Value::Array(vec![Value::String("worker".to_string())])
+    );
+
+    env.run_ok(&["stop", "tc", "--timeout", "2s"]);
+    env.run_ok(&["rm", "tc", "--force"]);
+}

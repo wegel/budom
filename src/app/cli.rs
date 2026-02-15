@@ -14,6 +14,7 @@ fn create_job(paths: &Paths, spec: NewJobSpec) -> Result<String> {
         schema: 1,
         id: id.clone(),
         name: spec.name.clone(),
+        tags: spec.tags.clone(),
         created_at: created_at.clone(),
         cwd: spec.cwd.to_string_lossy().to_string(),
         argv: spec.cmd,
@@ -255,6 +256,14 @@ fn map_ipc_error_to_exit(resp: &IpcResponse) -> i32 {
     }
 }
 
+fn map_target_resolve_error(msg: &str) -> i32 {
+    if msg.contains("invalid tag") || msg.contains("invalid tag selector") {
+        EXIT_USAGE
+    } else {
+        EXIT_NOT_FOUND
+    }
+}
+
 fn rm_offline(paths: &Paths, r: &str, force: bool) -> Result<()> {
     let id = resolve_ref(paths, r)?;
     let meta = load_meta(paths, &id)?;
@@ -427,6 +436,7 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
             replace,
             force,
             replace_timeout,
+            tags,
             cmd,
         } => {
             let replace_timeout_ms = match parse_timeout_ms(replace_timeout.as_deref()) {
@@ -485,6 +495,16 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                 }
             };
 
+            for t in &tags {
+                if !is_valid_tag(t) {
+                    eprintln!(
+                        "invalid tag '{}'; regex: [A-Za-z0-9][A-Za-z0-9_.-]{{0,63}}",
+                        t
+                    );
+                    return EXIT_USAGE;
+                }
+            }
+
             let (initial_ms, max_ms) = if let Some(ref b) = backoff {
                 match parse_backoff(b) {
                     Ok(x) => x,
@@ -534,6 +554,7 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                 &paths,
                 NewJobSpec {
                     name,
+                    tags,
                     cwd,
                     env_map,
                     inherit_env: !clean_env,
@@ -577,7 +598,18 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
         Commands::Ps {
             all,
             json: out_json,
+            tags,
         } => {
+            for t in &tags {
+                if !is_valid_tag(t) {
+                    eprintln!(
+                        "invalid tag '{}'; regex: [A-Za-z0-9][A-Za-z0-9_.-]{{0,63}}",
+                        t
+                    );
+                    return EXIT_USAGE;
+                }
+            }
+
             let rows = match send_ipc(&paths, &IpcRequest::Ps { all }) {
                 Ok(resp) if resp.ok => serde_json::from_value::<Vec<PsRow>>(
                     resp.data
@@ -593,6 +625,19 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                         return EXIT_OS;
                     }
                 },
+            };
+            let rows: Vec<PsRow> = if tags.is_empty() {
+                rows
+            } else {
+                rows.into_iter()
+                    .filter(|r| {
+                        if let Ok(meta) = load_meta(&paths, &r.id) {
+                            matches_all_tags(&meta.tags, &tags)
+                        } else {
+                            false
+                        }
+                    })
+                    .collect()
             };
 
             if out_json {
@@ -705,6 +750,7 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
         }
         Commands::Stop {
             refs,
+            tags,
             signal,
             timeout,
         } => {
@@ -725,8 +771,21 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                 }
             };
 
+            let targets = match resolve_targets(&paths, &refs, &tags) {
+                Ok(t) => t,
+                Err(e) => {
+                    let msg = e.to_string();
+                    eprintln!("{msg}");
+                    return map_target_resolve_error(&msg);
+                }
+            };
+            if targets.is_empty() {
+                eprintln!("no targets provided");
+                return EXIT_USAGE;
+            }
+
             let mut rc = EXIT_OK;
-            for r in refs {
+            for r in targets {
                 match send_ipc(
                     &paths,
                     &IpcRequest::Stop {
@@ -762,9 +821,22 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
 
             rc
         }
-        Commands::Rm { refs, force } => {
+        Commands::Rm { refs, tags, force } => {
+            let targets = match resolve_targets(&paths, &refs, &tags) {
+                Ok(t) => t,
+                Err(e) => {
+                    let msg = e.to_string();
+                    eprintln!("{msg}");
+                    return map_target_resolve_error(&msg);
+                }
+            };
+            if targets.is_empty() {
+                eprintln!("no targets provided");
+                return EXIT_USAGE;
+            }
+
             let mut rc = EXIT_OK;
-            for r in refs {
+            for r in targets {
                 match send_ipc(
                     &paths,
                     &IpcRequest::Rm {

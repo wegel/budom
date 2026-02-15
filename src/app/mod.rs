@@ -87,6 +87,8 @@ struct Meta {
     schema: u32,
     id: String,
     name: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
     created_at: String,
     cwd: String,
     argv: Vec<String>,
@@ -285,7 +287,11 @@ impl Paths {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "budom")]
+#[command(
+    name = "budom",
+    about = "Per-user daemon manager for background processes",
+    long_about = None
+)]
 #[command(version = "0.1.0")]
 struct Cli {
     #[command(subcommand)]
@@ -321,6 +327,8 @@ enum Commands {
         force: bool,
         #[arg(long, requires = "replace")]
         replace_timeout: Option<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
         #[arg(required = true, trailing_var_arg = true)]
         cmd: Vec<String>,
     },
@@ -329,6 +337,8 @@ enum Commands {
         all: bool,
         #[arg(long)]
         json: bool,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
     Inspect {
         r#ref: String,
@@ -347,16 +357,20 @@ enum Commands {
         tail: Option<usize>,
     },
     Stop {
-        #[arg(required = true, num_args = 1..)]
+        #[arg(value_name = "REF", num_args = 0..)]
         refs: Vec<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
         #[arg(long)]
         signal: Option<String>,
         #[arg(long)]
         timeout: Option<String>,
     },
     Rm {
-        #[arg(required = true, num_args = 1..)]
+        #[arg(value_name = "REF", num_args = 0..)]
         refs: Vec<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
         #[arg(long)]
         force: bool,
     },

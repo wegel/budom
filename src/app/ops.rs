@@ -63,6 +63,10 @@ pub(super) fn is_valid_name(name: &str) -> bool {
     })
 }
 
+pub(super) fn is_valid_tag(tag: &str) -> bool {
+    is_valid_name(tag)
+}
+
 pub(super) fn load_config(paths: &Paths) -> Result<EffectiveDefaults> {
     let defaults = ConfigFile::default();
     let cfg = if paths.config_path().exists() {
@@ -192,6 +196,72 @@ pub(super) fn list_named_job_ids(paths: &Paths, name: &str) -> Result<Vec<String
     }
     ids.sort();
     Ok(ids)
+}
+
+pub(super) fn matches_all_tags(job_tags: &[String], required_tags: &[String]) -> bool {
+    required_tags
+        .iter()
+        .all(|t| job_tags.iter().any(|jt| jt == t))
+}
+
+pub(super) fn list_job_ids_by_tags(paths: &Paths, required_tags: &[String]) -> Result<Vec<String>> {
+    if required_tags.is_empty() {
+        return list_job_ids(paths);
+    }
+    let mut ids = Vec::new();
+    for id in list_job_ids(paths)? {
+        if let Ok(meta) = load_meta(paths, &id)
+            && matches_all_tags(&meta.tags, required_tags)
+        {
+            ids.push(id);
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+pub(super) fn resolve_targets(
+    paths: &Paths,
+    refs: &[String],
+    tag_filters: &[String],
+) -> Result<Vec<String>> {
+    use std::collections::BTreeSet;
+    let mut out = BTreeSet::new();
+
+    for r in refs {
+        if let Some(tag) = r.strip_prefix("tag:") {
+            if !is_valid_tag(tag) {
+                bail!("invalid tag selector '{}'", r);
+            }
+            let ids = list_job_ids_by_tags(paths, &[tag.to_string()])?;
+            if ids.is_empty() {
+                bail!("not found: {}", r);
+            }
+            for id in ids {
+                out.insert(id);
+            }
+            continue;
+        }
+
+        out.insert(resolve_ref(paths, r)?);
+    }
+
+    if !tag_filters.is_empty() {
+        for t in tag_filters {
+            if !is_valid_tag(t) {
+                bail!("invalid tag '{}'", t);
+            }
+        }
+        let ids = list_job_ids_by_tags(paths, tag_filters)?;
+        if ids.is_empty() && out.is_empty() {
+            bail!("no jobs match tags");
+        }
+        for id in ids {
+            out.insert(id);
+        }
+    }
+
+    Ok(out.into_iter().collect())
 }
 
 pub(super) fn link_name(paths: &Paths, name: &str, id: &str) -> Result<()> {

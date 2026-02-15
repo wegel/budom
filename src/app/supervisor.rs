@@ -677,6 +677,7 @@ pub(super) fn ensure_supervisor(paths: &Paths) -> Result<()> {
 
 pub(super) struct NewJobSpec {
     pub(super) name: Option<String>,
+    pub(super) tags: Vec<String>,
     pub(super) cwd: PathBuf,
     pub(super) env_map: HashMap<String, String>,
     pub(super) inherit_env: bool,
