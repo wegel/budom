@@ -2,6 +2,28 @@
 
 `budom` is a per-user background daemon manager for Linux/Unix user processes.
 
+Example terminal log:
+
+```text
+$ budom run --name demo -- /bin/sh -lc 'while true; do echo hello; sleep 1; done'
+3mZ7aK2pQ9xT
+
+$ budom ps
+ID            NAME  DESIRED  STATE    PID     RESTARTS
+3mZ7aK2pQ9xT  demo  Running  Running  482311  0
+
+$ budom logs demo --tail 3
+hello
+hello
+hello
+
+$ budom stop demo
+
+$ budom ps --all
+ID            NAME  DESIRED  STATE   PID  RESTARTS
+3mZ7aK2pQ9xT  demo  Stopped  Exited  -    0
+```
+
 It provides:
 - run/list/inspect/stop/remove lifecycle management
 - a per-user supervisor process (no systemd dependency)
@@ -93,7 +115,7 @@ budom run --name api-a --replace --force -- /path/to/new-binary
 
 Commands that take a `<ref>` accept:
 1. exact name
-2. exact full ID (case-insensitive)
+2. exact full ID (case-sensitive)
 3. unique ID prefix (including 1 character if unique)
 4. `tag:<tag>` selectors (for commands supporting multi-target refs, like `stop`/`rm`)
 
