@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -312,6 +312,42 @@ fn second_run_works_while_supervisor_is_already_running() {
     env.run_ok(&["stop", "keeper"]);
     env.run_ok(&["rm", "keeper", "--force"]);
     env.run_ok(&["rm", &second_id, "--force"]);
+}
+
+#[test]
+fn ps_json_exits_cleanly_on_broken_pipe() {
+    let env = TestEnv::new();
+
+    env.run_ok(&["run", "--name", "bp", "--", "/bin/sh", "-c", "sleep 30"]);
+
+    let mut cmd = env.cmd();
+    cmd.args(["ps", "--json"]);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn ps");
+
+    drop(child.stdout.take());
+    let out = child.wait_with_output().expect("wait ps");
+
+    assert!(
+        out.status.success(),
+        "ps should exit cleanly on broken pipe\\nstdout={}\\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("failed printing to stdout"),
+        "panic output should not be present: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Broken pipe"),
+        "broken pipe should be handled quietly: {stderr}"
+    );
+
+    env.run_ok(&["stop", "bp", "--timeout", "2s"]);
+    env.run_ok(&["rm", "bp", "--force"]);
 }
 
 #[test]

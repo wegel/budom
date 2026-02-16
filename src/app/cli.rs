@@ -176,8 +176,29 @@ fn format_ps_rows(rows: &[PsRow]) -> String {
     out
 }
 
-fn print_ps(rows: &[PsRow]) {
-    print!("{}", format_ps_rows(rows));
+fn write_stdout_all(bytes: &[u8]) -> Result<bool> {
+    let mut out = io::stdout().lock();
+    match out.write_all(bytes) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(true),
+        Err(e) => return Err(e.into()),
+    }
+    match out.flush() {
+        Ok(()) => Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(true),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn write_stdout_line(s: &str) -> Result<bool> {
+    let mut line = String::with_capacity(s.len() + 1);
+    line.push_str(s);
+    line.push('\n');
+    write_stdout_all(line.as_bytes())
+}
+
+fn print_ps(rows: &[PsRow]) -> Result<bool> {
+    write_stdout_all(format_ps_rows(rows).as_bytes())
 }
 
 fn load_inspect(paths: &Paths, r: &str) -> Result<Value> {
@@ -258,8 +279,9 @@ fn print_file(path: &Path, tail: Option<usize>) -> Result<()> {
     } else {
         read_all(path)?
     };
-    io::stdout().write_all(&out)?;
-    io::stdout().flush()?;
+    if write_stdout_all(&out)? {
+        return Ok(());
+    }
     Ok(())
 }
 
@@ -278,8 +300,9 @@ fn follow_file(path: &Path) -> Result<()> {
             f.seek(SeekFrom::Start(offset))?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)?;
-            io::stdout().write_all(&buf)?;
-            io::stdout().flush()?;
+            if write_stdout_all(&buf)? {
+                return Ok(());
+            }
             offset = size;
         }
     }
@@ -615,10 +638,13 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
             }
 
             match send_ipc(&paths, &IpcRequest::Run { id: id.clone() }) {
-                Ok(resp) if resp.ok => {
-                    println!("{id}");
-                    EXIT_OK
-                }
+                Ok(resp) if resp.ok => match write_stdout_line(&id) {
+                    Ok(_) => EXIT_OK,
+                    Err(e) => {
+                        eprintln!("{e:#}");
+                        EXIT_OS
+                    }
+                },
                 Ok(resp) => {
                     eprintln!(
                         "{}",
@@ -681,14 +707,20 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
 
             if out_json {
                 match serde_json::to_string_pretty(&rows) {
-                    Ok(s) => println!("{s}"),
+                    Ok(s) => {
+                        if let Err(e) = write_stdout_line(&s) {
+                            eprintln!("{e:#}");
+                            return EXIT_OS;
+                        }
+                    }
                     Err(e) => {
                         eprintln!("{e:#}");
                         return EXIT_OS;
                     }
                 }
-            } else {
-                print_ps(&rows);
+            } else if let Err(e) = print_ps(&rows) {
+                eprintln!("{e:#}");
+                return EXIT_OS;
             }
             EXIT_OK
         }
@@ -723,17 +755,23 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
 
             if out_json {
                 match serde_json::to_string_pretty(&payload) {
-                    Ok(s) => println!("{s}"),
+                    Ok(s) => {
+                        if let Err(e) = write_stdout_line(&s) {
+                            eprintln!("{e:#}");
+                            return EXIT_OS;
+                        }
+                    }
                     Err(e) => {
                         eprintln!("{e:#}");
                         return EXIT_OS;
                     }
                 }
             } else {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
-                );
+                let s = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string());
+                if let Err(e) = write_stdout_line(&s) {
+                    eprintln!("{e:#}");
+                    return EXIT_OS;
+                }
             }
             EXIT_OK
         }
