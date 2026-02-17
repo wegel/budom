@@ -2,6 +2,30 @@ use super::cli::gc_impl;
 use super::ops::*;
 use super::*;
 
+const STATUS_HEARTBEAT_PERSIST_INTERVAL: Duration = Duration::from_secs(30);
+
+fn status_changed_except_last_seen(current: &StatusFile, persisted: &StatusFile) -> bool {
+    let mut c = current.clone();
+    let mut p = persisted.clone();
+    c.last_seen_at = None;
+    p.last_seen_at = None;
+    c != p
+}
+
+fn maybe_persist_status(paths: &Paths, id: &str, job: &mut ManagedJob) -> Result<()> {
+    let significant = status_changed_except_last_seen(&job.status, &job.persisted_status);
+    let heartbeat_due = job.last_status_persisted_at.elapsed() >= STATUS_HEARTBEAT_PERSIST_INTERVAL;
+    let last_seen_changed = job.status.last_seen_at != job.persisted_status.last_seen_at;
+
+    if significant || (last_seen_changed && heartbeat_due) {
+        save_status(paths, id, &job.status)?;
+        job.persisted_status = job.status.clone();
+        job.last_status_persisted_at = Instant::now();
+    }
+
+    Ok(())
+}
+
 impl Supervisor {
     fn load_job_from_disk(&mut self, id: &str, mark_stale_on_pid: bool) -> Result<()> {
         if self.jobs.contains_key(id) {
@@ -28,7 +52,9 @@ impl Supervisor {
             ManagedJob {
                 meta,
                 desired,
+                persisted_status: status.clone(),
                 status,
+                last_status_persisted_at: Instant::now(),
                 runtime: None,
                 backoff_until: None,
             },
@@ -70,12 +96,12 @@ impl Supervisor {
 
         job.status.state = StatusState::Starting;
         job.status.error = None;
-        save_status(&self.paths, id, &job.status)?;
+        maybe_persist_status(&self.paths, id, job)?;
 
         if job.meta.argv.is_empty() {
             job.status.state = StatusState::Error;
             job.status.error = Some("empty argv".to_string());
-            save_status(&self.paths, id, &job.status)?;
+            maybe_persist_status(&self.paths, id, job)?;
             return Ok(());
         }
 
@@ -107,7 +133,7 @@ impl Supervisor {
             Err(e) => {
                 job.status.state = StatusState::Error;
                 job.status.error = Some(format!("spawn failed: {e}"));
-                save_status(&self.paths, id, &job.status)?;
+                maybe_persist_status(&self.paths, id, job)?;
                 return Ok(());
             }
         };
@@ -116,7 +142,7 @@ impl Supervisor {
         let Some(pid) = pid else {
             job.status.state = StatusState::Error;
             job.status.error = Some("spawned child has no pid".to_string());
-            save_status(&self.paths, id, &job.status)?;
+            maybe_persist_status(&self.paths, id, job)?;
             return Ok(());
         };
 
@@ -149,7 +175,7 @@ impl Supervisor {
         job.status.started_at = Some(now_rfc3339());
         job.status.last_seen_at = Some(now_rfc3339());
         job.status.error = None;
-        save_status(&self.paths, id, &job.status)?;
+        maybe_persist_status(&self.paths, id, job)?;
 
         job.runtime = Some(RunningProc { child, pid });
         job.backoff_until = None;
@@ -196,7 +222,7 @@ impl Supervisor {
                 job.status.state = StatusState::Exited;
                 job.status.error = None;
                 job.runtime = None;
-                save_status(&self.paths, id, &job.status)?;
+                maybe_persist_status(&self.paths, id, job)?;
                 return Ok(());
             }
 
@@ -213,14 +239,14 @@ impl Supervisor {
             job.status.error = None;
             job.backoff_until = Some(Instant::now() + Duration::from_millis(delay));
             job.runtime = None;
-            save_status(&self.paths, id, &job.status)?;
+            maybe_persist_status(&self.paths, id, job)?;
             return Ok(());
         }
 
         job.status.state = StatusState::Exited;
         job.status.error = None;
         job.runtime = None;
-        save_status(&self.paths, id, &job.status)?;
+        maybe_persist_status(&self.paths, id, job)?;
         Ok(())
     }
 
@@ -237,13 +263,13 @@ impl Supervisor {
                         }
                         Ok(None) => {
                             job.status.last_seen_at = Some(now_rfc3339());
-                            let _ = save_status(&self.paths, &id, &job.status);
+                            let _ = maybe_persist_status(&self.paths, &id, job);
                         }
                         Err(e) => {
                             job.status.state = StatusState::Error;
                             job.status.error = Some(format!("wait failed: {e}"));
                             job.runtime = None;
-                            let _ = save_status(&self.paths, &id, &job.status);
+                            let _ = maybe_persist_status(&self.paths, &id, job);
                         }
                     }
                 } else if job.desired.desired == DesiredState::Running
@@ -283,10 +309,11 @@ impl Supervisor {
         job.desired.updated_at = now_rfc3339();
         save_desired(&self.paths, id, &job.desired)?;
 
-        if let Some(runtime) = job.runtime.as_mut() {
+        if job.runtime.is_some() {
             job.status.state = StatusState::Stopping;
-            save_status(&self.paths, id, &job.status)?;
+            maybe_persist_status(&self.paths, id, job)?;
 
+            let runtime = job.runtime.as_mut().expect("checked is_some");
             kill_pgroup(runtime.pid, signal)?;
             let deadline = Instant::now() + Duration::from_millis(timeout);
             let mut exited = None;
@@ -316,13 +343,13 @@ impl Supervisor {
                 job.status.state = StatusState::Exited;
                 job.status.pid = None;
                 remove_pid(&self.paths, id)?;
-                save_status(&self.paths, id, &job.status)?;
+                maybe_persist_status(&self.paths, id, job)?;
                 job.runtime = None;
             }
         } else {
             job.status.state = StatusState::Exited;
             job.status.pid = None;
-            save_status(&self.paths, id, &job.status)?;
+            maybe_persist_status(&self.paths, id, job)?;
         }
 
         Ok(())

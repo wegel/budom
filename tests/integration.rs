@@ -351,6 +351,32 @@ fn ps_json_exits_cleanly_on_broken_pipe() {
 }
 
 #[test]
+fn running_job_status_file_does_not_churn_at_idle() {
+    let env = TestEnv::new();
+
+    let out = env.run_ok(&["run", "--name", "idle", "--", "/bin/sh", "-c", "sleep 30"]);
+    let id = parse_run_id(&out);
+
+    env.wait_for(Duration::from_secs(3), || {
+        let v = env.inspect_json("idle");
+        v["status"]["state"] == Value::String("running".to_string())
+    });
+
+    let status_path = env.job_dir(&id).join("status.json");
+    let first = fs::read(&status_path).expect("read first status");
+    thread::sleep(Duration::from_millis(700));
+    let second = fs::read(&status_path).expect("read second status");
+
+    assert_eq!(
+        first, second,
+        "idle status file should remain unchanged over short interval"
+    );
+
+    env.run_ok(&["stop", "idle", "--timeout", "2s"]);
+    env.run_ok(&["rm", "idle", "--force"]);
+}
+
+#[test]
 fn stop_accepts_multiple_refs() {
     let env = TestEnv::new();
 

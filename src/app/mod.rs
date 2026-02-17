@@ -37,7 +37,7 @@ enum RestartPolicy {
     OnFailure,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum StatusState {
     Starting,
@@ -108,14 +108,14 @@ struct DesiredFile {
     updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ExitStatusFile {
     at: String,
     code: Option<i32>,
     signal: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct StatusFile {
     schema: u32,
     state: StatusState,
@@ -463,6 +463,8 @@ struct ManagedJob {
     meta: Meta,
     desired: DesiredFile,
     status: StatusFile,
+    persisted_status: StatusFile,
+    last_status_persisted_at: Instant,
     runtime: Option<RunningProc>,
     backoff_until: Option<Instant>,
 }
