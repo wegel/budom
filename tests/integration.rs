@@ -614,3 +614,20 @@ fn logs_can_target_tags_with_interleaved_colored_output() {
     env.run_ok(&["rm", "la", "--force"]);
     env.run_ok(&["rm", "lb", "--force"]);
 }
+
+#[test]
+fn logs_help_includes_follow_long_flag() {
+    let env = TestEnv::new();
+    let out = env.run(&["logs", "--help"]);
+    assert!(
+        out.status.success(),
+        "logs --help should succeed\\nstdout={}\\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("--follow"),
+        "expected --follow in help output: {text}"
+    );
+}

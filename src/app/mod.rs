@@ -351,7 +351,7 @@ enum Commands {
         refs: Vec<String>,
         #[arg(long = "tag")]
         tags: Vec<String>,
-        #[arg(short = 'f')]
+        #[arg(short = 'f', long = "follow")]
         follow: bool,
         #[arg(long)]
         stdout: bool,
