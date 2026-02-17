@@ -347,7 +347,10 @@ enum Commands {
         json: bool,
     },
     Logs {
-        r#ref: String,
+        #[arg(value_name = "REF", num_args = 0..)]
+        refs: Vec<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
         #[arg(short = 'f')]
         follow: bool,
         #[arg(long)]

@@ -201,6 +201,163 @@ fn print_ps(rows: &[PsRow]) -> Result<bool> {
     write_stdout_all(format_ps_rows(rows).as_bytes())
 }
 
+const CATPPUCCIN_MOCHA_COLORS: &[(u8, u8, u8)] = &[
+    (245, 224, 220), // rosewater
+    (242, 205, 205), // flamingo
+    (245, 194, 231), // pink
+    (203, 166, 247), // mauve
+    (243, 139, 168), // red
+    (235, 160, 172), // maroon
+    (250, 179, 135), // peach
+    (249, 226, 175), // yellow
+    (166, 227, 161), // green
+    (148, 226, 213), // teal
+    (137, 220, 235), // sky
+    (116, 199, 236), // sapphire
+    (137, 180, 250), // blue
+    (180, 190, 254), // lavender
+];
+
+#[derive(Clone)]
+struct LogSource {
+    label: String,
+    path: PathBuf,
+    color: (u8, u8, u8),
+    offset: u64,
+    partial: Vec<u8>,
+}
+
+fn color_for_id(id: &str) -> (u8, u8, u8) {
+    let mut hash: u64 = 1469598103934665603; // fnv offset basis
+    for b in id.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    CATPPUCCIN_MOCHA_COLORS[(hash as usize) % CATPPUCCIN_MOCHA_COLORS.len()]
+}
+
+fn label_for_id(paths: &Paths, id: &str) -> String {
+    if let Ok(meta) = load_meta(paths, id)
+        && let Some(name) = meta.name
+    {
+        return name;
+    }
+    id[..8.min(id.len())].to_string()
+}
+
+fn write_colored_prefixed_line(
+    label: &str,
+    color: (u8, u8, u8),
+    line: &[u8],
+    include_newline: bool,
+) -> Result<bool> {
+    let prefix = format!(
+        "\x1b[38;2;{};{};{}m[{}]\x1b[0m ",
+        color.0, color.1, color.2, label
+    );
+    let mut out = Vec::with_capacity(prefix.len() + line.len() + 1);
+    out.extend_from_slice(prefix.as_bytes());
+    out.extend_from_slice(line);
+    if include_newline {
+        out.push(b'\n');
+    }
+    write_stdout_all(&out)
+}
+
+fn drain_complete_lines(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (i, b) in buf.iter().enumerate() {
+        if *b == b'\n' {
+            out.push(buf[start..i].to_vec());
+            start = i + 1;
+        }
+    }
+    if start > 0 {
+        buf.drain(0..start);
+    }
+    out
+}
+
+fn read_log_bytes(path: &Path, tail: Option<usize>) -> Result<Vec<u8>> {
+    if let Some(n) = tail {
+        tail_lines(path, n)
+    } else {
+        read_all(path)
+    }
+}
+
+fn print_interleaved_snapshot(sources: &mut [LogSource], tail: Option<usize>) -> Result<bool> {
+    let mut lines_by_source = Vec::with_capacity(sources.len());
+
+    for s in sources.iter_mut() {
+        let bytes = read_log_bytes(&s.path, tail).unwrap_or_default();
+        s.offset = bytes.len() as u64;
+        s.partial = bytes;
+        let lines = drain_complete_lines(&mut s.partial);
+        lines_by_source.push(lines);
+    }
+
+    let mut printed = true;
+    while printed {
+        printed = false;
+        for (idx, lines) in lines_by_source.iter_mut().enumerate() {
+            if lines.is_empty() {
+                continue;
+            }
+            printed = true;
+            let line = lines.remove(0);
+            if write_colored_prefixed_line(&sources[idx].label, sources[idx].color, &line, true)? {
+                return Ok(true);
+            }
+        }
+    }
+
+    for s in sources.iter_mut() {
+        if !s.partial.is_empty() {
+            let partial = std::mem::take(&mut s.partial);
+            if write_colored_prefixed_line(&s.label, s.color, &partial, true)? {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn follow_interleaved_sources(sources: &mut [LogSource]) -> Result<()> {
+    loop {
+        std::thread::sleep(Duration::from_millis(200));
+        for s in sources.iter_mut() {
+            let size = fs::metadata(&s.path).map(|m| m.len()).unwrap_or(0);
+            if size < s.offset {
+                s.offset = 0;
+                s.partial.clear();
+            }
+            if size <= s.offset {
+                continue;
+            }
+            let mut f = match File::open(&s.path) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            use std::io::Seek;
+            use std::io::SeekFrom;
+            f.seek(SeekFrom::Start(s.offset))?;
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)?;
+            s.offset = size;
+            s.partial.extend_from_slice(&buf);
+
+            for line in drain_complete_lines(&mut s.partial) {
+                if write_colored_prefixed_line(&s.label, s.color, &line, true)? {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
 fn load_inspect(paths: &Paths, r: &str) -> Result<Value> {
     let id = resolve_ref(paths, r)?;
     let meta = load_meta(paths, &id)?;
@@ -244,6 +401,63 @@ fn get_logs_paths(paths: &Paths, r: &str) -> Result<(PathBuf, PathBuf, bool)> {
         paths.stderr_path(&id),
         meta.logging.merge_streams,
     ))
+}
+
+fn collect_log_sources(
+    paths: &Paths,
+    ids: &[String],
+    stdout: bool,
+    stderr: bool,
+) -> Result<Vec<LogSource>> {
+    let include_stdout = stdout || !stderr;
+    let include_stderr = stderr;
+    let mut out = Vec::new();
+
+    for id in ids {
+        let (stdout_path, stderr_path, merge) = get_logs_paths(paths, id)?;
+        let base_label = label_for_id(paths, id);
+        let color = color_for_id(id);
+
+        if include_stdout {
+            let label = if include_stderr && !merge {
+                format!("{base_label}:stdout")
+            } else {
+                base_label.clone()
+            };
+            out.push(LogSource {
+                label,
+                path: stdout_path.clone(),
+                color,
+                offset: 0,
+                partial: Vec::new(),
+            });
+        }
+
+        if include_stderr {
+            let path = if merge {
+                stdout_path.clone()
+            } else {
+                stderr_path
+            };
+            let already_added = include_stdout && merge;
+            if !already_added {
+                let label = if merge {
+                    base_label.clone()
+                } else {
+                    format!("{base_label}:stderr")
+                };
+                out.push(LogSource {
+                    label,
+                    path,
+                    color,
+                    offset: 0,
+                    partial: Vec::new(),
+                });
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 fn read_all(path: &Path) -> Result<Vec<u8>> {
@@ -776,51 +990,95 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
             EXIT_OK
         }
         Commands::Logs {
-            r#ref,
+            refs,
+            tags,
             follow,
             stdout,
             stderr,
             tail,
         } => {
-            let (stdout_path, stderr_path, merge) = match get_logs_paths(&paths, &r#ref) {
-                Ok(x) => x,
+            let targets = match resolve_targets(&paths, &refs, &tags) {
+                Ok(t) => t,
+                Err(e) => {
+                    let msg = e.to_string();
+                    eprintln!("{msg}");
+                    return map_target_resolve_error(&msg);
+                }
+            };
+            if targets.is_empty() {
+                eprintln!("no targets provided");
+                return EXIT_USAGE;
+            }
+
+            let single_plain = tags.is_empty() && refs.len() == 1 && !refs[0].starts_with("tag:");
+            if single_plain {
+                let (stdout_path, stderr_path, merge) = match get_logs_paths(&paths, &targets[0]) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        eprintln!("{e:#}");
+                        return EXIT_NOT_FOUND;
+                    }
+                };
+
+                let mut selected = Vec::new();
+                if stdout {
+                    selected.push(stdout_path.clone());
+                }
+                if stderr {
+                    selected.push(if merge {
+                        stdout_path.clone()
+                    } else {
+                        stderr_path.clone()
+                    });
+                }
+                if !stdout && !stderr {
+                    selected.push(stdout_path.clone());
+                }
+
+                for p in &selected {
+                    if let Err(e) = print_file(p, tail) {
+                        eprintln!("{e:#}");
+                        return EXIT_OS;
+                    }
+                }
+
+                if follow {
+                    if selected.len() > 1 {
+                        eprintln!("-f with multiple streams is not supported in v1");
+                        return EXIT_USAGE;
+                    }
+                    if let Err(e) = follow_file(&selected[0]) {
+                        eprintln!("{e:#}");
+                        return EXIT_OS;
+                    }
+                }
+
+                return EXIT_OK;
+            }
+
+            let mut sources = match collect_log_sources(&paths, &targets, stdout, stderr) {
+                Ok(s) => s,
                 Err(e) => {
                     eprintln!("{e:#}");
                     return EXIT_NOT_FOUND;
                 }
             };
-
-            let mut selected = Vec::new();
-            if stdout {
-                selected.push(stdout_path.clone());
-            }
-            if stderr {
-                selected.push(if merge {
-                    stdout_path.clone()
-                } else {
-                    stderr_path.clone()
-                });
-            }
-            if !stdout && !stderr {
-                selected.push(stdout_path.clone());
+            if sources.is_empty() {
+                eprintln!("no log streams selected");
+                return EXIT_USAGE;
             }
 
-            for p in &selected {
-                if let Err(e) = print_file(p, tail) {
+            match print_interleaved_snapshot(&mut sources, tail) {
+                Ok(_) => {}
+                Err(e) => {
                     eprintln!("{e:#}");
                     return EXIT_OS;
                 }
             }
 
-            if follow {
-                if selected.len() > 1 {
-                    eprintln!("-f with multiple streams is not supported in v1");
-                    return EXIT_USAGE;
-                }
-                if let Err(e) = follow_file(&selected[0]) {
-                    eprintln!("{e:#}");
-                    return EXIT_OS;
-                }
+            if follow && let Err(e) = follow_interleaved_sources(&mut sources) {
+                eprintln!("{e:#}");
+                return EXIT_OS;
             }
 
             EXIT_OK

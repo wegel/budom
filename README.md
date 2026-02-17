@@ -70,6 +70,12 @@ Read logs:
 budom logs demo --tail 50
 ```
 
+Interleave logs from all daemons matching tags (colorized per daemon):
+
+```bash
+budom logs --tag api --tag blue --tail 100 -f
+```
+
 Stop one or many jobs:
 
 ```bash

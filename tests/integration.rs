@@ -558,3 +558,59 @@ fn tags_can_filter_ps_and_target_stop_rm() {
     env.run_ok(&["stop", "tc", "--timeout", "2s"]);
     env.run_ok(&["rm", "tc", "--force"]);
 }
+
+#[test]
+fn logs_can_target_tags_with_interleaved_colored_output() {
+    let env = TestEnv::new();
+
+    env.run_ok(&[
+        "run",
+        "--name",
+        "la",
+        "--tag",
+        "api",
+        "--",
+        "/bin/sh",
+        "-c",
+        "echo la-1; echo la-2",
+    ]);
+    env.run_ok(&[
+        "run",
+        "--name",
+        "lb",
+        "--tag",
+        "api",
+        "--",
+        "/bin/sh",
+        "-c",
+        "echo lb-1; echo lb-2",
+    ]);
+
+    env.wait_for(Duration::from_secs(5), || {
+        let a = env.inspect_json("la");
+        let b = env.inspect_json("lb");
+        a["status"]["state"] == Value::String("exited".to_string())
+            && b["status"]["state"] == Value::String("exited".to_string())
+    });
+
+    let out = env.run(&["logs", "--tag", "api", "--tail", "1"]);
+    assert!(
+        out.status.success(),
+        "logs by tag should succeed\\nstdout={}\\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("\u{1b}[38;2;"),
+        "expected ansi truecolor prefixes: {text}"
+    );
+    assert!(text.contains("[la]"), "expected la prefix: {text}");
+    assert!(text.contains("[lb]"), "expected lb prefix: {text}");
+    assert!(text.contains("la-2"), "expected la tail output: {text}");
+    assert!(text.contains("lb-2"), "expected lb tail output: {text}");
+
+    env.run_ok(&["rm", "la", "--force"]);
+    env.run_ok(&["rm", "lb", "--force"]);
+}
