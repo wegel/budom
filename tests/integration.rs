@@ -564,6 +564,15 @@ fn tags_can_filter_ps_and_target_stop_rm() {
     let ps_api = env.run_ok(&["ps", "--json", "--tag", "api"]);
     let rows_api: Value = serde_json::from_str(&ps_api).unwrap();
     assert_eq!(rows_api.as_array().unwrap().len(), 2);
+    for row in rows_api.as_array().unwrap() {
+        let tags = row["tags"]
+            .as_array()
+            .expect("ps row should include tags array");
+        assert!(
+            tags.iter().any(|t| t == "api"),
+            "filtered ps row should include api tag: {row}"
+        );
+    }
 
     env.run_ok(&["stop", "--tag", "api", "--tag", "blue", "--timeout", "2s"]);
     env.wait_for(Duration::from_secs(5), || {

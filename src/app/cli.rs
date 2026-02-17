@@ -103,6 +103,7 @@ fn load_all_rows(paths: &Paths, all: bool) -> Result<Vec<PsRow>> {
             rows.push(PsRow {
                 id,
                 name: meta.name,
+                tags: meta.tags,
                 desired: desired.desired,
                 state: status.state,
                 pid: status.pid,
@@ -140,10 +141,16 @@ fn format_ps_rows(rows: &[PsRow]) -> String {
     let mut w_state = "STATE".len();
     let mut w_pid = "PID".len();
     let mut w_restarts = "RESTARTS".len();
+    let mut w_tags = "TAGS".len();
 
     for r in rows {
         let id = r.id[..8.min(r.id.len())].to_string();
         let name = r.name.clone().unwrap_or_else(|| "-".to_string());
+        let tags = if r.tags.is_empty() {
+            "-".to_string()
+        } else {
+            r.tags.join(",")
+        };
         let desired = desired_display(&r.desired).to_string();
         let state = status_display(&r.state).to_string();
         let pid = r
@@ -158,19 +165,20 @@ fn format_ps_rows(rows: &[PsRow]) -> String {
         w_state = w_state.max(state.len());
         w_pid = w_pid.max(pid.len());
         w_restarts = w_restarts.max(restarts.len());
+        w_tags = w_tags.max(tags.len());
 
-        data.push((id, name, desired, state, pid, restarts));
+        data.push((id, name, desired, state, pid, restarts, tags));
     }
 
     let mut out = String::new();
     out.push_str(&format!(
-        "{:<w_id$}  {:<w_name$}  {:<w_desired$}  {:<w_state$}  {:<w_pid$}  {:<w_restarts$}\n",
-        "ID", "NAME", "DESIRED", "STATE", "PID", "RESTARTS"
+        "{:<w_id$}  {:<w_name$}  {:<w_desired$}  {:<w_state$}  {:<w_pid$}  {:<w_restarts$}  {:<w_tags$}\n",
+        "ID", "NAME", "DESIRED", "STATE", "PID", "RESTARTS", "TAGS"
     ));
-    for (id, name, desired, state, pid, restarts) in data {
+    for (id, name, desired, state, pid, restarts, tags) in data {
         out.push_str(&format!(
-            "{:<w_id$}  {:<w_name$}  {:<w_desired$}  {:<w_state$}  {:<w_pid$}  {:<w_restarts$}\n",
-            id, name, desired, state, pid, restarts
+            "{:<w_id$}  {:<w_name$}  {:<w_desired$}  {:<w_state$}  {:<w_pid$}  {:<w_restarts$}  {:<w_tags$}\n",
+            id, name, desired, state, pid, restarts, tags
         ));
     }
     out
@@ -1259,6 +1267,7 @@ mod tests {
             PsRow {
                 id: "01abcdef1234567890".to_string(),
                 name: None,
+                tags: vec!["api".to_string(), "blue".to_string()],
                 desired: DesiredState::Running,
                 state: StatusState::Running,
                 pid: Some(12),
@@ -1267,6 +1276,7 @@ mod tests {
             PsRow {
                 id: "01b".to_string(),
                 name: Some("longer-name".to_string()),
+                tags: vec![],
                 desired: DesiredState::Stopped,
                 state: StatusState::Exited,
                 pid: None,
@@ -1280,6 +1290,7 @@ mod tests {
 
         let header = lines[0];
         let name_col = header.find("NAME").expect("NAME column");
+        let tags_col = header.find("TAGS").expect("TAGS column");
         let desired_col = header.find("DESIRED").expect("DESIRED column");
         let state_col = header.find("STATE").expect("STATE column");
         let pid_col = header.find("PID").expect("PID column");
@@ -1287,6 +1298,7 @@ mod tests {
 
         for line in &lines[1..] {
             assert_ne!(line.as_bytes()[name_col], b' ');
+            assert_ne!(line.as_bytes()[tags_col], b' ');
             assert_ne!(line.as_bytes()[desired_col], b' ');
             assert_ne!(line.as_bytes()[state_col], b' ');
             assert_ne!(line.as_bytes()[pid_col], b' ');

@@ -9,8 +9,8 @@ $ budom run --name demo -- /bin/sh -lc 'while true; do echo hello; sleep 1; done
 3mZ7aK2pQ9xT
 
 $ budom ps
-ID            NAME  DESIRED  STATE    PID     RESTARTS
-3mZ7aK2pQ9xT  demo  Running  Running  482311  0
+ID            NAME  DESIRED  STATE    PID     RESTARTS  TAGS
+3mZ7aK2pQ9xT  demo  Running  Running  482311  0         -
 
 $ budom logs demo --tail 3
 hello
@@ -20,8 +20,8 @@ hello
 $ budom stop demo
 
 $ budom ps --all
-ID            NAME  DESIRED  STATE   PID  RESTARTS
-3mZ7aK2pQ9xT  demo  Stopped  Exited  -    0
+ID            NAME  DESIRED  STATE   PID  RESTARTS  TAGS
+3mZ7aK2pQ9xT  demo  Stopped  Exited  -    0         -
 ```
 
 It provides:

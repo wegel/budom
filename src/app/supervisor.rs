@@ -458,6 +458,7 @@ impl Supervisor {
                         rows.push(PsRow {
                             id: id.clone(),
                             name: job.meta.name.clone(),
+                            tags: job.meta.tags.clone(),
                             desired: job.desired.desired.clone(),
                             state: job.status.state.clone(),
                             pid: job.status.pid,

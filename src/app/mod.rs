@@ -448,6 +448,7 @@ impl IpcResponse {
 struct PsRow {
     id: String,
     name: Option<String>,
+    tags: Vec<String>,
     desired: DesiredState,
     state: StatusState,
     pid: Option<i32>,
