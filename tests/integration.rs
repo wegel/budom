@@ -377,6 +377,50 @@ fn running_job_status_file_does_not_churn_at_idle() {
 }
 
 #[test]
+fn ps_reconciles_running_state_against_real_process_liveness() {
+    let env = TestEnv::new();
+
+    let out = env.run_ok(&["run", "--name", "ghost", "--", "/bin/sh", "-c", "sleep 30"]);
+    let id = parse_run_id(&out);
+    let v = env.inspect_json("ghost");
+    let pid = v["status"]["pid"].as_i64().expect("pid") as i32;
+
+    let sup_pid_text = fs::read_to_string(env.supervisor_pid_path()).unwrap();
+    let sup_pid: i32 = sup_pid_text.trim().parse().unwrap();
+    let _ = Command::new("kill")
+        .args(["-9", &sup_pid.to_string()])
+        .status();
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+
+    thread::sleep(Duration::from_millis(150));
+
+    let ps = env.run_ok(&["ps", "--json"]);
+    let rows: Value = serde_json::from_str(&ps).unwrap();
+    let listed_in_default = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["id"] == Value::String(id.clone()));
+    assert!(
+        !listed_in_default,
+        "stale/dead job should not appear in default ps output: {rows}"
+    );
+
+    let ps_all = env.run_ok(&["ps", "--all", "--json"]);
+    let rows_all: Value = serde_json::from_str(&ps_all).unwrap();
+    let row = rows_all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == Value::String(id.clone()))
+        .expect("job should still be listed in --all");
+    assert_eq!(row["state"], Value::String("stale".to_string()));
+    assert_eq!(row["pid"], Value::Null);
+
+    env.run_ok(&["rm", "ghost", "--force"]);
+}
+
+#[test]
 fn stop_accepts_multiple_refs() {
     let env = TestEnv::new();
 

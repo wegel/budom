@@ -392,6 +392,60 @@ pub(super) fn parse_pid(paths: &Paths, id: &str) -> Result<Option<i32>> {
     Ok(Some(s.trim().parse::<i32>()?))
 }
 
+pub(super) fn pid_is_alive(pid: i32) -> bool {
+    let p = Pid::from_raw(pid);
+    match nix::sys::signal::kill(p, None) {
+        Ok(()) => true,
+        Err(Errno::EPERM) => true,
+        Err(Errno::ESRCH) => false,
+        Err(_) => false,
+    }
+}
+
+pub(super) fn reconcile_status_liveness(
+    paths: &Paths,
+    id: &str,
+    status: &mut StatusFile,
+) -> Result<bool> {
+    let active = matches!(
+        status.state,
+        StatusState::Starting | StatusState::Running | StatusState::Stopping | StatusState::Backoff
+    );
+    if !active {
+        return Ok(false);
+    }
+
+    let pid_on_disk = parse_pid(paths, id)?;
+    let pid = status.pid.or(pid_on_disk);
+    let alive = pid.map(pid_is_alive).unwrap_or(false);
+    if alive {
+        return Ok(false);
+    }
+
+    if pid.is_some() {
+        let _ = remove_pid(paths, id);
+    }
+
+    let mut changed = false;
+    if status.state != StatusState::Stale {
+        status.state = StatusState::Stale;
+        changed = true;
+    }
+    if status.pid.is_some() {
+        status.pid = None;
+        changed = true;
+    }
+    if status.error.is_none() {
+        status.error = Some("stale: process not running".to_string());
+        changed = true;
+    }
+    if changed {
+        status.last_seen_at = Some(now_rfc3339());
+    }
+
+    Ok(changed)
+}
+
 pub(super) fn should_show_default(status: &StatusState) -> bool {
     !matches!(status, StatusState::Exited | StatusState::Stale)
 }

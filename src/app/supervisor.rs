@@ -453,7 +453,15 @@ impl Supervisor {
             }
             IpcRequest::Ps { all } => {
                 let mut rows = Vec::new();
-                for (id, job) in &self.jobs {
+                let ids: Vec<String> = self.jobs.keys().cloned().collect();
+                for id in ids {
+                    let Some(job) = self.jobs.get_mut(&id) else {
+                        continue;
+                    };
+                    if reconcile_status_liveness(&self.paths, &id, &mut job.status).unwrap_or(false)
+                    {
+                        let _ = maybe_persist_status(&self.paths, &id, job);
+                    }
                     if all || should_show_default(&job.status.state) {
                         rows.push(PsRow {
                             id: id.clone(),

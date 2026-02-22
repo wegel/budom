@@ -98,7 +98,10 @@ fn load_all_rows(paths: &Paths, all: bool) -> Result<Vec<PsRow>> {
     for id in list_job_ids(paths)? {
         let meta = load_meta(paths, &id)?;
         let desired = load_desired(paths, &id)?;
-        let status = load_status(paths, &id)?;
+        let mut status = load_status(paths, &id)?;
+        if reconcile_status_liveness(paths, &id, &mut status)? {
+            let _ = save_status(paths, &id, &status);
+        }
         if all || should_show_default(&status.state) {
             rows.push(PsRow {
                 id,
