@@ -341,6 +341,12 @@ enum Commands {
         #[arg(long = "tag")]
         tags: Vec<String>,
     },
+    Recover {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        if_supervisor_down: bool,
+    },
     Inspect {
         r#ref: String,
         #[arg(long)]
@@ -395,6 +401,7 @@ enum IpcRequest {
     Ps {
         all: bool,
     },
+    Recover,
     Inspect {
         r#ref: String,
     },

@@ -27,6 +27,7 @@ ID            NAME  DESIRED  STATE   PID  RESTARTS  TAGS
 It provides:
 - run/list/inspect/stop/remove lifecycle management
 - a per-user supervisor process (no systemd dependency)
+- reboot recovery with explicit `budom recover` command
 - restart policies with exponential backoff
 - raw stdout/stderr log capture and size-based rotation
 - stable job names and short/partial ID references
@@ -68,6 +69,18 @@ Read logs:
 
 ```bash
 budom logs demo --tail 50
+```
+
+Recover desired-running services after reboot:
+
+```bash
+budom recover
+```
+
+Only recover when supervisor is down:
+
+```bash
+budom recover --if-supervisor-down
 ```
 
 Interleave logs from all daemons matching tags (colorized per daemon):

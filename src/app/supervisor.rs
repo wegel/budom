@@ -451,6 +451,57 @@ impl Supervisor {
                     Err(e) => IpcResponse::err("os", e.to_string()),
                 }
             }
+            IpcRequest::Recover => {
+                let mut desired_running = 0u64;
+                let mut started = 0u64;
+                let mut already_running = 0u64;
+                let mut failed = 0u64;
+                let mut failed_ids = Vec::new();
+
+                let ids: Vec<String> = self.jobs.keys().cloned().collect();
+                for id in ids {
+                    let desired_is_running = self
+                        .jobs
+                        .get(&id)
+                        .map(|j| j.desired.desired == DesiredState::Running)
+                        .unwrap_or(false);
+                    if !desired_is_running {
+                        continue;
+                    }
+                    desired_running += 1;
+
+                    if self
+                        .jobs
+                        .get(&id)
+                        .and_then(|j| j.runtime.as_ref())
+                        .is_some()
+                    {
+                        already_running += 1;
+                        continue;
+                    }
+
+                    let start_res = self.start_if_needed(&id).await;
+                    let running_now = self
+                        .jobs
+                        .get(&id)
+                        .and_then(|j| j.runtime.as_ref())
+                        .is_some();
+                    if start_res.is_ok() && running_now {
+                        started += 1;
+                    } else {
+                        failed += 1;
+                        failed_ids.push(id);
+                    }
+                }
+
+                IpcResponse::ok(json!({
+                    "desired_running": desired_running,
+                    "started": started,
+                    "already_running": already_running,
+                    "failed": failed,
+                    "failed_ids": failed_ids,
+                }))
+            }
             IpcRequest::Ps { all } => {
                 let mut rows = Vec::new();
                 let ids: Vec<String> = self.jobs.keys().cloned().collect();

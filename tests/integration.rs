@@ -387,6 +387,13 @@ fn ps_reconciles_running_state_against_real_process_liveness() {
 
     let sup_pid_text = fs::read_to_string(env.supervisor_pid_path()).unwrap();
     let sup_pid: i32 = sup_pid_text.trim().parse().unwrap();
+
+    let desired_path = env.job_dir(&id).join("desired.json");
+    let mut desired: Value = serde_json::from_slice(&fs::read(&desired_path).unwrap()).unwrap();
+    desired["desired"] = Value::String("stopped".to_string());
+    desired["updated_at"] = Value::String("2026-02-20T00:00:00Z".to_string());
+    write_json(&desired_path, &desired);
+
     let _ = Command::new("kill")
         .args(["-9", &sup_pid.to_string()])
         .status();
@@ -418,6 +425,70 @@ fn ps_reconciles_running_state_against_real_process_liveness() {
     assert_eq!(row["pid"], Value::Null);
 
     env.run_ok(&["rm", "ghost", "--force"]);
+}
+
+#[test]
+fn recover_restarts_desired_running_jobs_after_supervisor_restart() {
+    let env = TestEnv::new();
+
+    let out = env.run_ok(&["run", "--name", "boot", "--", "/bin/sh", "-c", "sleep 30"]);
+    let _id = parse_run_id(&out);
+    let v = env.inspect_json("boot");
+    let old_pid = v["status"]["pid"].as_i64().expect("pid") as i32;
+
+    let sup_pid_text = fs::read_to_string(env.supervisor_pid_path()).unwrap();
+    let sup_pid: i32 = sup_pid_text.trim().parse().unwrap();
+    let _ = Command::new("kill")
+        .args(["-9", &sup_pid.to_string()])
+        .status();
+    let _ = Command::new("kill")
+        .args(["-9", &old_pid.to_string()])
+        .status();
+
+    thread::sleep(Duration::from_millis(150));
+
+    let recover_out = env.run_ok(&["recover", "--json"]);
+    let rec: Value = serde_json::from_str(&recover_out).unwrap();
+    assert_eq!(rec["desired_running"].as_u64(), Some(1));
+    assert_eq!(rec["failed"].as_u64(), Some(0));
+    assert_eq!(
+        rec["started"].as_u64().unwrap_or(0) + rec["already_running"].as_u64().unwrap_or(0),
+        1
+    );
+
+    env.wait_for(Duration::from_secs(5), || {
+        let v = env.inspect_json("boot");
+        v["status"]["state"] == Value::String("running".to_string())
+            && v["status"]["pid"].as_i64().is_some()
+    });
+
+    let v2 = env.inspect_json("boot");
+    assert_ne!(
+        v2["status"]["pid"].as_i64().unwrap_or_default(),
+        i64::from(old_pid),
+        "pid should be replaced after restart"
+    );
+
+    env.run_ok(&["stop", "boot", "--timeout", "2s"]);
+    env.run_ok(&["rm", "boot", "--force"]);
+}
+
+#[test]
+fn recover_if_supervisor_down_skips_when_supervisor_is_running() {
+    let env = TestEnv::new();
+
+    env.run_ok(&["run", "--name", "noop", "--", "/bin/sh", "-c", "sleep 30"]);
+
+    let out = env.run_ok(&["recover", "--if-supervisor-down", "--json"]);
+    let payload: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(payload["skipped"], Value::Bool(true));
+    assert_eq!(
+        payload["reason"],
+        Value::String("supervisor_running".to_string())
+    );
+
+    env.run_ok(&["stop", "noop", "--timeout", "2s"]);
+    env.run_ok(&["rm", "noop", "--force"]);
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use super::ops::*;
-use super::supervisor::{NewJobSpec, ensure_supervisor, send_ipc, supervisor_main};
+use super::supervisor::{NewJobSpec, connect_ipc, ensure_supervisor, send_ipc, supervisor_main};
 use super::*;
 
 const ID_ALPHABET_BASE58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -948,6 +948,119 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                 return EXIT_OS;
             }
             EXIT_OK
+        }
+        Commands::Recover {
+            json: out_json,
+            if_supervisor_down,
+        } => {
+            if if_supervisor_down && connect_ipc(&paths).is_ok() {
+                let skipped = json!({
+                    "desired_running": 0,
+                    "started": 0,
+                    "already_running": 0,
+                    "failed": 0,
+                    "failed_ids": [],
+                    "skipped": true,
+                    "reason": "supervisor_running",
+                });
+                if out_json {
+                    match serde_json::to_string_pretty(&skipped) {
+                        Ok(s) => {
+                            if let Err(e) = write_stdout_line(&s) {
+                                eprintln!("{e:#}");
+                                return EXIT_OS;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("{e:#}");
+                            return EXIT_OS;
+                        }
+                    }
+                } else if let Err(e) = write_stdout_line("skipped: supervisor already running") {
+                    eprintln!("{e:#}");
+                    return EXIT_OS;
+                }
+                return EXIT_OK;
+            }
+
+            if let Err(e) = ensure_supervisor(&paths) {
+                eprintln!("{e:#}");
+                return EXIT_OS;
+            }
+
+            let resp = match send_ipc(&paths, &IpcRequest::Recover) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    eprintln!("{e:#}");
+                    return EXIT_OS;
+                }
+            };
+            if !resp.ok {
+                eprintln!(
+                    "{}",
+                    resp.message
+                        .clone()
+                        .unwrap_or_else(|| "recover failed".to_string())
+                );
+                return map_ipc_error_to_exit(&resp);
+            }
+
+            let desired_running = resp
+                .data
+                .get("desired_running")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let started = resp
+                .data
+                .get("started")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let already_running = resp
+                .data
+                .get("already_running")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let failed = resp.data.get("failed").and_then(Value::as_u64).unwrap_or(0);
+            let failed_ids: Vec<String> = resp
+                .data
+                .get("failed_ids")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if out_json {
+                match serde_json::to_string_pretty(&resp.data) {
+                    Ok(s) => {
+                        if let Err(e) = write_stdout_line(&s) {
+                            eprintln!("{e:#}");
+                            return EXIT_OS;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{e:#}");
+                        return EXIT_OS;
+                    }
+                }
+            } else {
+                let mut line = format!(
+                    "desired_running={} started={} already_running={} failed={}",
+                    desired_running, started, already_running, failed
+                );
+                if !failed_ids.is_empty() {
+                    line.push_str(&format!(" failed_ids={}", failed_ids.join(",")));
+                }
+                if let Err(e) = write_stdout_line(&line) {
+                    eprintln!("{e:#}");
+                    return EXIT_OS;
+                }
+            }
+
+            if failed > 0 { EXIT_OS } else { EXIT_OK }
         }
         Commands::Inspect {
             r#ref,
