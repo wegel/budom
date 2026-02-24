@@ -1207,6 +1207,52 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
 
             EXIT_OK
         }
+        Commands::Start { refs, tags } => {
+            let targets = match resolve_targets(&paths, &refs, &tags) {
+                Ok(t) => t,
+                Err(e) => {
+                    let msg = e.to_string();
+                    eprintln!("{msg}");
+                    return map_target_resolve_error(&msg);
+                }
+            };
+            if targets.is_empty() {
+                eprintln!("no targets provided");
+                return EXIT_USAGE;
+            }
+
+            if let Err(e) = ensure_supervisor(&paths) {
+                eprintln!("{e:#}");
+                return EXIT_OS;
+            }
+
+            let mut rc = EXIT_OK;
+            for r in targets {
+                match send_ipc(&paths, &IpcRequest::Start { r#ref: r.clone() }) {
+                    Ok(resp) if resp.ok => {}
+                    Ok(resp) => {
+                        eprintln!(
+                            "{}: {}",
+                            r,
+                            resp.message
+                                .clone()
+                                .unwrap_or_else(|| "start failed".to_string())
+                        );
+                        if rc == EXIT_OK {
+                            rc = map_ipc_error_to_exit(&resp);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{r}: {e:#}");
+                        if rc == EXIT_OK {
+                            rc = EXIT_OS;
+                        }
+                    }
+                }
+            }
+
+            rc
+        }
         Commands::Stop {
             refs,
             tags,

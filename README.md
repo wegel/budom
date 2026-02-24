@@ -95,6 +95,13 @@ Stop one or many jobs:
 budom stop demo other-job 01abcde
 ```
 
+Start one or many stopped jobs:
+
+```bash
+budom start demo other-job
+budom start --tag api --tag blue
+```
+
 Remove job state:
 
 ```bash

@@ -512,6 +512,37 @@ fn stop_accepts_multiple_refs() {
 }
 
 #[test]
+fn start_accepts_multiple_refs() {
+    let env = TestEnv::new();
+
+    env.run_ok(&["run", "--name", "sa", "--", "/bin/sh", "-c", "sleep 30"]);
+    env.run_ok(&["run", "--name", "sb", "--", "/bin/sh", "-c", "sleep 30"]);
+    env.run_ok(&["stop", "sa", "sb", "--timeout", "2s"]);
+
+    env.wait_for(Duration::from_secs(5), || {
+        let a = env.inspect_json("sa");
+        let b = env.inspect_json("sb");
+        a["status"]["state"] == Value::String("exited".to_string())
+            && b["status"]["state"] == Value::String("exited".to_string())
+    });
+
+    env.run_ok(&["start", "sa", "sb"]);
+
+    env.wait_for(Duration::from_secs(5), || {
+        let a = env.inspect_json("sa");
+        let b = env.inspect_json("sb");
+        a["status"]["state"] == Value::String("running".to_string())
+            && b["status"]["state"] == Value::String("running".to_string())
+            && a["desired"]["desired"] == Value::String("running".to_string())
+            && b["desired"]["desired"] == Value::String("running".to_string())
+    });
+
+    env.run_ok(&["stop", "sa", "sb", "--timeout", "2s"]);
+    env.run_ok(&["rm", "sa", "--force"]);
+    env.run_ok(&["rm", "sb", "--force"]);
+}
+
+#[test]
 fn id_is_base58_len12_and_one_char_prefix_resolves_when_unique() {
     let env = TestEnv::new();
 
@@ -707,6 +738,43 @@ fn tags_can_filter_ps_and_target_stop_rm() {
 
     env.run_ok(&["stop", "tc", "--timeout", "2s"]);
     env.run_ok(&["rm", "tc", "--force"]);
+}
+
+#[test]
+fn start_can_target_tags() {
+    let env = TestEnv::new();
+
+    env.run_ok(&[
+        "run", "--name", "sta", "--tag", "api", "--tag", "blue", "--", "/bin/sh", "-c", "sleep 30",
+    ]);
+    env.run_ok(&[
+        "run", "--name", "stb", "--tag", "api", "--tag", "red", "--", "/bin/sh", "-c", "sleep 30",
+    ]);
+    env.run_ok(&[
+        "run", "--name", "stc", "--tag", "worker", "--", "/bin/sh", "-c", "sleep 30",
+    ]);
+
+    env.run_ok(&["stop", "--tag", "api", "--timeout", "2s"]);
+    env.wait_for(Duration::from_secs(5), || {
+        let a = env.inspect_json("sta");
+        let b = env.inspect_json("stb");
+        a["status"]["state"] == Value::String("exited".to_string())
+            && b["status"]["state"] == Value::String("exited".to_string())
+    });
+
+    env.run_ok(&["start", "--tag", "api"]);
+
+    env.wait_for(Duration::from_secs(5), || {
+        let a = env.inspect_json("sta");
+        let b = env.inspect_json("stb");
+        a["status"]["state"] == Value::String("running".to_string())
+            && b["status"]["state"] == Value::String("running".to_string())
+    });
+
+    env.run_ok(&["stop", "sta", "stb", "stc", "--timeout", "2s"]);
+    env.run_ok(&["rm", "sta", "--force"]);
+    env.run_ok(&["rm", "stb", "--force"]);
+    env.run_ok(&["rm", "stc", "--force"]);
 }
 
 #[test]

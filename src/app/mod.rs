@@ -366,6 +366,12 @@ enum Commands {
         #[arg(long)]
         tail: Option<usize>,
     },
+    Start {
+        #[arg(value_name = "REF", num_args = 0..)]
+        refs: Vec<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+    },
     Stop {
         #[arg(value_name = "REF", num_args = 0..)]
         refs: Vec<String>,
@@ -403,6 +409,9 @@ enum IpcRequest {
     },
     Recover,
     Inspect {
+        r#ref: String,
+    },
+    Start {
         r#ref: String,
     },
     Stop {

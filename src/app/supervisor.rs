@@ -355,6 +355,26 @@ impl Supervisor {
         Ok(())
     }
 
+    async fn handle_start(&mut self, id: &str) -> Result<()> {
+        let Some(job) = self.jobs.get_mut(id) else {
+            bail!("not found");
+        };
+
+        job.desired.desired = DesiredState::Running;
+        job.desired.updated_at = now_rfc3339();
+        save_desired(&self.paths, id, &job.desired)?;
+
+        if matches!(job.status.state, StatusState::Stale) {
+            job.status.state = StatusState::Exited;
+            job.status.pid = None;
+            job.status.error = None;
+            maybe_persist_status(&self.paths, id, job)?;
+        }
+
+        job.backoff_until = None;
+        self.start_if_needed(id).await
+    }
+
     async fn handle_rm(&mut self, id: &str, force: bool) -> Result<()> {
         let (running, name) = {
             let Some(job) = self.jobs.get(id) else {
@@ -538,6 +558,18 @@ impl Supervisor {
                 }
                 Err(_) => IpcResponse::err("not_found", format!("not found: {}", r#ref)),
             },
+            IpcRequest::Start { r#ref } => {
+                let id = match resolve_ref(&self.paths, &r#ref) {
+                    Ok(id) => id,
+                    Err(_) => {
+                        return IpcResponse::err("not_found", format!("not found: {}", r#ref));
+                    }
+                };
+                match self.handle_start(&id).await {
+                    Ok(()) => IpcResponse::ok(json!({"id":id})),
+                    Err(e) => IpcResponse::err("os", e.to_string()),
+                }
+            }
             IpcRequest::Stop {
                 r#ref,
                 signal,
