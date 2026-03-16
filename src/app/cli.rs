@@ -1253,6 +1253,123 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
 
             rc
         }
+        Commands::Restart {
+            refs,
+            tags,
+            signal,
+            timeout,
+        } => {
+            let signal_name = signal.unwrap_or_else(|| "TERM".to_string());
+            let timeout_ms = match parse_timeout_ms(timeout.as_deref()) {
+                Ok(ms) => ms,
+                Err(e) => {
+                    eprintln!("{e:#}");
+                    return EXIT_USAGE;
+                }
+            };
+
+            let sig = match parse_signal(&signal_name) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{e:#}");
+                    return EXIT_USAGE;
+                }
+            };
+
+            let targets = match resolve_targets(&paths, &refs, &tags) {
+                Ok(t) => t,
+                Err(e) => {
+                    let msg = e.to_string();
+                    eprintln!("{msg}");
+                    return map_target_resolve_error(&msg);
+                }
+            };
+            if targets.is_empty() {
+                eprintln!("no targets provided");
+                return EXIT_USAGE;
+            }
+
+            let mut rc = EXIT_OK;
+            for r in targets {
+                let stop_ok = match send_ipc(
+                    &paths,
+                    &IpcRequest::Stop {
+                        r#ref: r.clone(),
+                        signal: signal_name.clone(),
+                        timeout_ms,
+                    },
+                ) {
+                    Ok(resp) if resp.ok => true,
+                    Ok(resp) => {
+                        eprintln!(
+                            "{}: {}",
+                            r,
+                            resp.message
+                                .clone()
+                                .unwrap_or_else(|| "restart stop failed".to_string())
+                        );
+                        if rc == EXIT_OK {
+                            rc = map_ipc_error_to_exit(&resp);
+                        }
+                        false
+                    }
+                    Err(_) => match stop_offline(&paths, &r, sig, timeout_ms) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            let msg = e.to_string();
+                            eprintln!("{r}: {msg}");
+                            if rc == EXIT_OK {
+                                rc = if msg.contains("not found")
+                                    || msg.contains("invalid tag")
+                                    || msg.contains("invalid tag selector")
+                                {
+                                    map_target_resolve_error(&msg)
+                                } else {
+                                    EXIT_OS
+                                };
+                            }
+                            false
+                        }
+                    },
+                };
+
+                if !stop_ok {
+                    continue;
+                }
+
+                if let Err(e) = ensure_supervisor(&paths) {
+                    eprintln!("{e:#}");
+                    if rc == EXIT_OK {
+                        rc = EXIT_OS;
+                    }
+                    continue;
+                }
+
+                match send_ipc(&paths, &IpcRequest::Start { r#ref: r.clone() }) {
+                    Ok(resp) if resp.ok => {}
+                    Ok(resp) => {
+                        eprintln!(
+                            "{}: {}",
+                            r,
+                            resp.message
+                                .clone()
+                                .unwrap_or_else(|| "restart start failed".to_string())
+                        );
+                        if rc == EXIT_OK {
+                            rc = map_ipc_error_to_exit(&resp);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{r}: {e:#}");
+                        if rc == EXIT_OK {
+                            rc = EXIT_OS;
+                        }
+                    }
+                }
+            }
+
+            rc
+        }
         Commands::Stop {
             refs,
             tags,

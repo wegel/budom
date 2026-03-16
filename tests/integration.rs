@@ -543,6 +543,49 @@ fn start_accepts_multiple_refs() {
 }
 
 #[test]
+fn restart_accepts_multiple_refs() {
+    let env = TestEnv::new();
+    let marker_a = env.data.join("restart-a.term");
+    let marker_b = env.data.join("restart-b.term");
+    let script_a = format!(
+        "trap 'echo term >> {} ; exit 0' TERM; while true; do sleep 1; done",
+        marker_a.display()
+    );
+    let script_b = format!(
+        "trap 'echo term >> {} ; exit 0' TERM; while true; do sleep 1; done",
+        marker_b.display()
+    );
+
+    env.run_ok(&["run", "--name", "rsta", "--", "/bin/sh", "-c", &script_a]);
+    env.run_ok(&["run", "--name", "rstb", "--", "/bin/sh", "-c", &script_b]);
+
+    env.wait_for(Duration::from_secs(5), || {
+        let a = env.inspect_json("rsta");
+        let b = env.inspect_json("rstb");
+        a["status"]["state"] == Value::String("running".to_string())
+            && b["status"]["state"] == Value::String("running".to_string())
+    });
+
+    env.run_ok(&["restart", "rsta", "rstb", "--timeout", "2s"]);
+
+    env.wait_for(Duration::from_secs(5), || {
+        marker_a.exists() && marker_b.exists()
+    });
+    env.wait_for(Duration::from_secs(5), || {
+        let a = env.inspect_json("rsta");
+        let b = env.inspect_json("rstb");
+        a["status"]["state"] == Value::String("running".to_string())
+            && b["status"]["state"] == Value::String("running".to_string())
+            && a["desired"]["desired"] == Value::String("running".to_string())
+            && b["desired"]["desired"] == Value::String("running".to_string())
+    });
+
+    env.run_ok(&["stop", "rsta", "rstb", "--timeout", "2s"]);
+    env.run_ok(&["rm", "rsta", "--force"]);
+    env.run_ok(&["rm", "rstb", "--force"]);
+}
+
+#[test]
 fn id_is_base58_len12_and_one_char_prefix_resolves_when_unique() {
     let env = TestEnv::new();
 

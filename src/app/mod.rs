@@ -372,6 +372,16 @@ enum Commands {
         #[arg(long = "tag")]
         tags: Vec<String>,
     },
+    Restart {
+        #[arg(value_name = "REF", num_args = 0..)]
+        refs: Vec<String>,
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        #[arg(long)]
+        signal: Option<String>,
+        #[arg(long)]
+        timeout: Option<String>,
+    },
     Stop {
         #[arg(value_name = "REF", num_args = 0..)]
         refs: Vec<String>,
