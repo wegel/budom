@@ -25,7 +25,7 @@ ID            NAME  DESIRED  STATE   PID  RESTARTS  TAGS
 ```
 
 It provides:
-- run/list/inspect/stop/remove lifecycle management
+- run/list/inspect/start/stop/restart/remove lifecycle management
 - a per-user supervisor process (no systemd dependency)
 - reboot recovery with explicit `budom recover` command
 - restart policies with exponential backoff
@@ -102,6 +102,13 @@ budom start demo other-job
 budom start --tag api --tag blue
 ```
 
+Restart one or many jobs:
+
+```bash
+budom restart demo other-job
+budom restart --tag api --timeout 5s
+```
+
 Remove job state:
 
 ```bash
@@ -143,7 +150,7 @@ Commands that take a `<ref>` accept:
 1. exact name
 2. exact full ID (case-sensitive)
 3. unique ID prefix (including 1 character if unique)
-4. `tag:<tag>` selectors (for commands supporting multi-target refs, like `stop`/`rm`)
+4. `tag:<tag>` selectors (for commands supporting multi-target refs, like `stop`/`restart`/`rm`)
 
 If a prefix is ambiguous, the command fails with an ambiguity error.
 
