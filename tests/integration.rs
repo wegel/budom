@@ -492,6 +492,88 @@ fn recover_if_supervisor_down_skips_when_supervisor_is_running() {
 }
 
 #[test]
+fn recover_quiet_suppresses_normal_stdout() {
+    let env = TestEnv::new();
+
+    let out = env.run_ok(&[
+        "run",
+        "--name",
+        "quiet-recover",
+        "--",
+        "/bin/sh",
+        "-c",
+        "sleep 30",
+    ]);
+    let _id = parse_run_id(&out);
+    let v = env.inspect_json("quiet-recover");
+    let old_pid = v["status"]["pid"].as_i64().expect("pid") as i32;
+
+    let sup_pid_text = fs::read_to_string(env.supervisor_pid_path()).unwrap();
+    let sup_pid: i32 = sup_pid_text.trim().parse().unwrap();
+    let _ = Command::new("kill")
+        .args(["-9", &sup_pid.to_string()])
+        .status();
+    let _ = Command::new("kill")
+        .args(["-9", &old_pid.to_string()])
+        .status();
+
+    thread::sleep(Duration::from_millis(150));
+
+    let recover = env.run(&["recover", "--quiet"]);
+    assert!(
+        recover.status.success(),
+        "recover --quiet should succeed\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&recover.stdout),
+        String::from_utf8_lossy(&recover.stderr)
+    );
+    assert!(
+        recover.stdout.is_empty(),
+        "recover --quiet should not write stdout: {}",
+        String::from_utf8_lossy(&recover.stdout)
+    );
+
+    env.wait_for(Duration::from_secs(5), || {
+        let v = env.inspect_json("quiet-recover");
+        v["status"]["state"] == Value::String("running".to_string())
+            && v["status"]["pid"].as_i64().is_some()
+    });
+
+    env.run_ok(&["stop", "quiet-recover", "--timeout", "2s"]);
+    env.run_ok(&["rm", "quiet-recover", "--force"]);
+}
+
+#[test]
+fn recover_quiet_suppresses_skip_stdout() {
+    let env = TestEnv::new();
+
+    env.run_ok(&[
+        "run",
+        "--name",
+        "quiet-skip",
+        "--",
+        "/bin/sh",
+        "-c",
+        "sleep 30",
+    ]);
+
+    let out = env.run(&["recover", "--quiet", "--if-supervisor-down"]);
+    assert!(
+        out.status.success(),
+        "recover --quiet --if-supervisor-down should succeed\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "recover --quiet --if-supervisor-down should not write stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    env.run_ok(&["stop", "quiet-skip", "--timeout", "2s"]);
+    env.run_ok(&["rm", "quiet-skip", "--force"]);
+}
+
+#[test]
 fn stop_accepts_multiple_refs() {
     let env = TestEnv::new();
 

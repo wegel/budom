@@ -951,6 +951,7 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
         }
         Commands::Recover {
             json: out_json,
+            quiet,
             if_supervisor_down,
         } => {
             if if_supervisor_down && connect_ipc(&paths).is_ok() {
@@ -963,6 +964,9 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                     "skipped": true,
                     "reason": "supervisor_running",
                 });
+                if quiet {
+                    return EXIT_OK;
+                }
                 if out_json {
                     match serde_json::to_string_pretty(&skipped) {
                         Ok(s) => {
@@ -1033,7 +1037,9 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                 })
                 .unwrap_or_default();
 
-            if out_json {
+            if quiet {
+                // Preserve recover's exit semantics while suppressing normal stdout output.
+            } else if out_json {
                 match serde_json::to_string_pretty(&resp.data) {
                     Ok(s) => {
                         if let Err(e) = write_stdout_line(&s) {
