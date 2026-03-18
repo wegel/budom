@@ -77,6 +77,12 @@ Recover desired-running services after reboot:
 budom recover
 ```
 
+Recover quietly while still returning failure via exit status:
+
+```bash
+budom recover --quiet
+```
+
 Only recover when supervisor is down:
 
 ```bash

@@ -345,6 +345,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
         #[arg(long)]
+        quiet: bool,
+        #[arg(long)]
         if_supervisor_down: bool,
     },
     Inspect {
