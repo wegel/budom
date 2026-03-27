@@ -712,6 +712,7 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
         Commands::Run {
             name,
             cwd,
+            env_files,
             env_vars,
             clean_env,
             merge_streams,
@@ -774,13 +775,25 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                 }
             };
 
-            let env_map = match parse_env_vars(&env_vars) {
+            let mut env_map = HashMap::new();
+            for env_file in &env_files {
+                let parsed = match parse_env_file(env_file) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("{e:#}");
+                        return EXIT_USAGE;
+                    }
+                };
+                env_map.extend(parsed);
+            }
+            let inline_env = match parse_env_vars(&env_vars) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("{e:#}");
                     return EXIT_USAGE;
                 }
             };
+            env_map.extend(inline_env);
 
             for t in &tags {
                 if !is_valid_tag(t) {

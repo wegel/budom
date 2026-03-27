@@ -48,6 +48,37 @@ pub(super) fn parse_env_vars(pairs: &[String]) -> Result<HashMap<String, String>
     Ok(out)
 }
 
+pub(super) fn parse_env_file(path: &Path) -> Result<HashMap<String, String>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed reading env file {}", path.display()))?;
+    let mut out = HashMap::new();
+
+    for (idx, raw_line) in raw.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let (k, v) = line.split_once('=').ok_or_else(|| {
+            anyhow!(
+                "invalid env file {}:{}: expected KEY=VAL",
+                path.display(),
+                idx + 1
+            )
+        })?;
+        if k.is_empty() {
+            bail!(
+                "invalid env file {}:{}: key is empty",
+                path.display(),
+                idx + 1
+            );
+        }
+        out.insert(k.to_string(), v.to_string());
+    }
+
+    Ok(out)
+}
+
 pub(super) fn is_valid_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     if bytes.is_empty() || bytes.len() > 64 {

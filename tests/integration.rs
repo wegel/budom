@@ -187,6 +187,50 @@ fn restart_policy_increments_restart_count() {
 }
 
 #[test]
+fn env_file_loads_values_and_inline_env_overrides() {
+    let env = TestEnv::new();
+    let env_file = env.data.join("service.env");
+    fs::write(
+        &env_file,
+        "FILE_ONLY=from-file\nOVERRIDE=from-file\n# comment\n\n",
+    )
+    .unwrap();
+
+    let stdout = env.run_ok(&[
+        "run",
+        "--name",
+        "envfile",
+        "--env-file",
+        env_file.to_str().unwrap(),
+        "--env",
+        "OVERRIDE=from-cli",
+        "--env",
+        "INLINE_ONLY=from-cli",
+        "--",
+        "/bin/sh",
+        "-c",
+        "printf '%s|%s|%s\\n' \"$FILE_ONLY\" \"$OVERRIDE\" \"$INLINE_ONLY\"",
+    ]);
+    let id = parse_run_id(&stdout);
+
+    env.wait_for(Duration::from_secs(3), || {
+        let v = env.inspect_json("envfile");
+        v["status"]["state"] == Value::String("exited".to_string())
+    });
+
+    let out_path = env.job_dir(&id).join("stdout.log");
+    let logged = fs::read_to_string(out_path).unwrap();
+    assert_eq!(logged, "from-file|from-cli|from-cli\n");
+
+    let inspect = env.inspect_json("envfile");
+    assert_eq!(inspect["meta"]["env"]["FILE_ONLY"], "from-file");
+    assert_eq!(inspect["meta"]["env"]["OVERRIDE"], "from-cli");
+    assert_eq!(inspect["meta"]["env"]["INLINE_ONLY"], "from-cli");
+
+    env.run_ok(&["rm", "envfile"]);
+}
+
+#[test]
 fn raw_log_bytes_are_preserved() {
     let env = TestEnv::new();
 

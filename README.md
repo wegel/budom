@@ -53,6 +53,12 @@ Run a long-lived process:
 budom run --name demo -- /bin/sh -lc 'while true; do echo hello; sleep 1; done'
 ```
 
+Load environment variables from a file and override specific keys inline:
+
+```bash
+budom run --name demo --env-file .env --env PORT=8080 -- /path/to/server
+```
+
 List running jobs:
 
 ```bash

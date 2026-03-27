@@ -306,6 +306,8 @@ enum Commands {
         name: Option<String>,
         #[arg(long)]
         cwd: Option<PathBuf>,
+        #[arg(long = "env-file")]
+        env_files: Vec<PathBuf>,
         #[arg(long = "env")]
         env_vars: Vec<String>,
         #[arg(long)]
