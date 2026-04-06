@@ -98,6 +98,8 @@ struct Meta {
     stdin: String,
     user: UserInfo,
     logging: LoggingConfig,
+    #[serde(default)]
+    start_delay_ms: u64,
     restart: RestartConfig,
 }
 
@@ -306,6 +308,8 @@ enum Commands {
         name: Option<String>,
         #[arg(long)]
         cwd: Option<PathBuf>,
+        #[arg(long)]
+        start_delay: Option<String>,
         #[arg(long = "env-file")]
         env_files: Vec<PathBuf>,
         #[arg(long = "env")]
@@ -497,6 +501,7 @@ struct ManagedJob {
     persisted_status: StatusFile,
     last_status_persisted_at: Instant,
     runtime: Option<RunningProc>,
+    start_after: Option<Instant>,
     backoff_until: Option<Instant>,
 }
 

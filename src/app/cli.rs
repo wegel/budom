@@ -62,6 +62,7 @@ fn create_job(paths: &Paths, spec: NewJobSpec) -> Result<String> {
         stdin: "null".to_string(),
         user: UserInfo { uid, gid },
         logging: spec.logging,
+        start_delay_ms: spec.start_delay_ms,
         restart: spec.restart,
     };
 
@@ -712,6 +713,7 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
         Commands::Run {
             name,
             cwd,
+            start_delay,
             env_files,
             env_vars,
             clean_env,
@@ -733,6 +735,17 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                     eprintln!("{e:#}");
                     return EXIT_USAGE;
                 }
+            };
+            let start_delay_ms = if let Some(start_delay) = start_delay.as_deref() {
+                match parse_timeout_ms(Some(start_delay)) {
+                    Ok(ms) => ms,
+                    Err(e) => {
+                        eprintln!("{e:#}");
+                        return EXIT_USAGE;
+                    }
+                }
+            } else {
+                0
             };
 
             if let Some(n) = &name {
@@ -860,6 +873,7 @@ pub(super) fn run_cli(cli: Cli) -> i32 {
                     inherit_env: !clean_env,
                     cmd,
                     logging,
+                    start_delay_ms,
                     restart: restart_cfg,
                 },
             ) {

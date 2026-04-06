@@ -59,6 +59,12 @@ Load environment variables from a file and override specific keys inline:
 budom run --name demo --env-file .env --env PORT=8080 -- /path/to/server
 ```
 
+Delay a service's manual/recovery start without needing extra flags later:
+
+```bash
+budom run --name api --start-delay 10s -- /path/to/api
+```
+
 List running jobs:
 
 ```bash

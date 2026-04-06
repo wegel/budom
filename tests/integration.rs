@@ -231,6 +231,112 @@ fn env_file_loads_values_and_inline_env_overrides() {
 }
 
 #[test]
+fn start_delay_delays_initial_run() {
+    let env = TestEnv::new();
+
+    let out = env.run_ok(&[
+        "run",
+        "--name",
+        "delayed-run",
+        "--start-delay",
+        "700ms",
+        "--",
+        "/bin/sh",
+        "-c",
+        "sleep 30",
+    ]);
+    let id = parse_run_id(&out);
+
+    thread::sleep(Duration::from_millis(150));
+
+    let early = env.inspect_json("delayed-run");
+    assert_eq!(early["meta"]["start_delay_ms"].as_u64(), Some(700));
+    assert_eq!(
+        early["status"]["state"],
+        Value::String("starting".to_string())
+    );
+    assert_eq!(early["status"]["pid"], Value::Null);
+
+    env.wait_for(Duration::from_secs(3), || {
+        let v = env.inspect_json("delayed-run");
+        v["status"]["state"] == Value::String("running".to_string())
+            && v["status"]["pid"].as_i64().is_some()
+    });
+
+    env.run_ok(&["stop", &id, "--timeout", "2s"]);
+    env.run_ok(&["rm", &id, "--force"]);
+}
+
+#[test]
+fn restart_by_tag_applies_stored_start_delay_automatically() {
+    let env = TestEnv::new();
+
+    env.run_ok(&[
+        "run", "--name", "fast", "--tag", "prod", "--", "/bin/sh", "-c", "sleep 30",
+    ]);
+    env.run_ok(&[
+        "run",
+        "--name",
+        "slow",
+        "--tag",
+        "prod",
+        "--start-delay",
+        "700ms",
+        "--",
+        "/bin/sh",
+        "-c",
+        "sleep 30",
+    ]);
+
+    env.wait_for(Duration::from_secs(3), || {
+        let fast = env.inspect_json("fast");
+        let slow = env.inspect_json("slow");
+        fast["status"]["state"] == Value::String("running".to_string())
+            && slow["status"]["state"] == Value::String("running".to_string())
+    });
+
+    env.run_ok(&["stop", "--tag", "prod", "--timeout", "2s"]);
+    env.wait_for(Duration::from_secs(5), || {
+        let fast = env.inspect_json("fast");
+        let slow = env.inspect_json("slow");
+        fast["status"]["state"] == Value::String("exited".to_string())
+            && slow["status"]["state"] == Value::String("exited".to_string())
+    });
+
+    env.run_ok(&["restart", "--tag", "prod", "--timeout", "2s"]);
+
+    let start = Instant::now();
+    let mut observed_stagger = false;
+    while start.elapsed() < Duration::from_millis(350) {
+        let fast = env.inspect_json("fast");
+        let slow = env.inspect_json("slow");
+        let fast_running = fast["status"]["state"] == Value::String("running".to_string())
+            && fast["status"]["pid"].as_i64().is_some();
+        let slow_waiting = slow["status"]["state"] == Value::String("starting".to_string())
+            && slow["status"]["pid"].is_null();
+        if fast_running && slow_waiting {
+            observed_stagger = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        observed_stagger,
+        "restart by tag should start the non-delayed service while the delayed service is still waiting"
+    );
+
+    env.wait_for(Duration::from_secs(3), || {
+        let slow = env.inspect_json("slow");
+        slow["status"]["state"] == Value::String("running".to_string())
+            && slow["status"]["pid"].as_i64().is_some()
+    });
+
+    env.run_ok(&["stop", "--tag", "prod", "--timeout", "2s"]);
+    env.run_ok(&["rm", "fast", "--force"]);
+    env.run_ok(&["rm", "slow", "--force"]);
+}
+
+#[test]
 fn raw_log_bytes_are_preserved() {
     let env = TestEnv::new();
 
@@ -515,6 +621,66 @@ fn recover_restarts_desired_running_jobs_after_supervisor_restart() {
 
     env.run_ok(&["stop", "boot", "--timeout", "2s"]);
     env.run_ok(&["rm", "boot", "--force"]);
+}
+
+#[test]
+fn recover_honors_stored_start_delay_without_counting_failure() {
+    let env = TestEnv::new();
+
+    let out = env.run_ok(&[
+        "run",
+        "--name",
+        "recover-delay",
+        "--start-delay",
+        "700ms",
+        "--",
+        "/bin/sh",
+        "-c",
+        "sleep 30",
+    ]);
+    let _id = parse_run_id(&out);
+
+    env.wait_for(Duration::from_secs(3), || {
+        let v = env.inspect_json("recover-delay");
+        v["status"]["state"] == Value::String("running".to_string())
+            && v["status"]["pid"].as_i64().is_some()
+    });
+
+    let v = env.inspect_json("recover-delay");
+    let old_pid = v["status"]["pid"].as_i64().expect("pid") as i32;
+
+    let sup_pid_text = fs::read_to_string(env.supervisor_pid_path()).unwrap();
+    let sup_pid: i32 = sup_pid_text.trim().parse().unwrap();
+    let _ = Command::new("kill")
+        .args(["-9", &sup_pid.to_string()])
+        .status();
+    let _ = Command::new("kill")
+        .args(["-9", &old_pid.to_string()])
+        .status();
+
+    thread::sleep(Duration::from_millis(150));
+
+    let recover_out = env.run_ok(&["recover", "--json"]);
+    let rec: Value = serde_json::from_str(&recover_out).unwrap();
+    assert_eq!(rec["desired_running"].as_u64(), Some(1));
+    assert_eq!(rec["started"].as_u64(), Some(1));
+    assert_eq!(rec["failed"].as_u64(), Some(0));
+
+    let early = env.inspect_json("recover-delay");
+    assert_eq!(
+        early["status"]["state"],
+        Value::String("starting".to_string())
+    );
+    assert!(early["status"]["pid"].is_null());
+
+    env.wait_for(Duration::from_secs(3), || {
+        let v = env.inspect_json("recover-delay");
+        v["status"]["state"] == Value::String("running".to_string())
+            && v["status"]["pid"].as_i64().is_some()
+    });
+
+    env.run_ok(&["stop", "recover-delay", "--timeout", "2s"]);
+    env.run_ok(&["rm", "recover-delay", "--force"]);
 }
 
 #[test]

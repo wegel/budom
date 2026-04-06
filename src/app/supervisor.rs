@@ -56,6 +56,7 @@ impl Supervisor {
                 status,
                 last_status_persisted_at: Instant::now(),
                 runtime: None,
+                start_after: None,
                 backoff_until: None,
             },
         );
@@ -78,6 +79,34 @@ impl Supervisor {
         Ok(sup)
     }
 
+    async fn queue_start(&mut self, id: &str, use_start_delay: bool) -> Result<()> {
+        let Some(job) = self.jobs.get_mut(id) else {
+            bail!("unknown job id: {id}");
+        };
+        if job.runtime.is_some() {
+            return Ok(());
+        }
+        if job.desired.desired != DesiredState::Running {
+            return Ok(());
+        }
+
+        if use_start_delay && job.meta.start_delay_ms > 0 && job.start_after.is_none() {
+            job.start_after = Some(Instant::now() + Duration::from_millis(job.meta.start_delay_ms));
+        }
+        if !use_start_delay {
+            job.start_after = None;
+        }
+
+        if job.start_after.is_some() {
+            job.status.state = StatusState::Starting;
+            job.status.pid = None;
+            job.status.error = None;
+            maybe_persist_status(&self.paths, id, job)?;
+        }
+
+        self.start_if_needed(id).await
+    }
+
     async fn start_if_needed(&mut self, id: &str) -> Result<()> {
         let Some(job) = self.jobs.get_mut(id) else {
             bail!("unknown job id: {id}");
@@ -92,6 +121,12 @@ impl Supervisor {
             && Instant::now() < until
         {
             return Ok(());
+        }
+        if let Some(until) = job.start_after {
+            if Instant::now() < until {
+                return Ok(());
+            }
+            job.start_after = None;
         }
 
         job.status.state = StatusState::Starting;
@@ -178,6 +213,7 @@ impl Supervisor {
         maybe_persist_status(&self.paths, id, job)?;
 
         job.runtime = Some(RunningProc { child, pid });
+        job.start_after = None;
         job.backoff_until = None;
         Ok(())
     }
@@ -255,6 +291,7 @@ impl Supervisor {
         for id in ids {
             let mut exited: Option<(Option<i32>, Option<String>)> = None;
             let mut maybe_restart_from_backoff = false;
+            let mut maybe_start_from_delay = false;
             if let Some(job) = self.jobs.get_mut(&id) {
                 if let Some(runtime) = job.runtime.as_mut() {
                     match runtime.child.try_wait() {
@@ -278,6 +315,12 @@ impl Supervisor {
                     && Instant::now() >= until
                 {
                     maybe_restart_from_backoff = true;
+                } else if job.desired.desired == DesiredState::Running
+                    && matches!(job.status.state, StatusState::Starting)
+                    && let Some(until) = job.start_after
+                    && Instant::now() >= until
+                {
+                    maybe_start_from_delay = true;
                 }
             }
 
@@ -286,6 +329,8 @@ impl Supervisor {
             }
 
             if maybe_restart_from_backoff {
+                self.start_if_needed(&id).await?;
+            } else if maybe_start_from_delay {
                 self.start_if_needed(&id).await?;
             }
         }
@@ -308,6 +353,8 @@ impl Supervisor {
         job.desired.desired = DesiredState::Stopped;
         job.desired.updated_at = now_rfc3339();
         save_desired(&self.paths, id, &job.desired)?;
+        job.start_after = None;
+        job.backoff_until = None;
 
         if job.runtime.is_some() {
             job.status.state = StatusState::Stopping;
@@ -372,7 +419,7 @@ impl Supervisor {
         }
 
         job.backoff_until = None;
-        self.start_if_needed(id).await
+        self.queue_start(id, true).await
     }
 
     async fn handle_rm(&mut self, id: &str, force: bool) -> Result<()> {
@@ -435,7 +482,7 @@ impl Supervisor {
                     );
                 }
 
-                match self.start_if_needed(&id).await {
+                match self.queue_start(&id, true).await {
                     Ok(()) => {
                         let Some(job) = self.jobs.get(&id) else {
                             return IpcResponse::err("not_found", "job missing");
@@ -456,7 +503,7 @@ impl Supervisor {
                                 json!({"id":id,"name":job.meta.name,"pid":job.status.pid}),
                             );
                         }
-                        match self.start_if_needed(&id).await {
+                        match self.queue_start(&id, true).await {
                             Ok(()) => {
                                 let Some(job) = self.jobs.get(&id) else {
                                     return IpcResponse::err("not_found", "job missing");
@@ -500,13 +547,18 @@ impl Supervisor {
                         continue;
                     }
 
-                    let start_res = self.start_if_needed(&id).await;
+                    let start_res = self.queue_start(&id, true).await;
                     let running_now = self
                         .jobs
                         .get(&id)
                         .and_then(|j| j.runtime.as_ref())
                         .is_some();
-                    if start_res.is_ok() && running_now {
+                    let pending_now = self
+                        .jobs
+                        .get(&id)
+                        .map(|j| j.runtime.is_none() && j.start_after.is_some())
+                        .unwrap_or(false);
+                    if start_res.is_ok() && (running_now || pending_now) {
                         started += 1;
                     } else {
                         failed += 1;
@@ -697,7 +749,7 @@ pub(super) async fn supervisor_main(paths: Paths) -> Result<()> {
         if let Some(job) = sup.jobs.get(&id)
             && job.desired.desired == DesiredState::Running
         {
-            let _ = sup.start_if_needed(&id).await;
+            let _ = sup.queue_start(&id, true).await;
         }
     }
 
@@ -802,5 +854,6 @@ pub(super) struct NewJobSpec {
     pub(super) inherit_env: bool,
     pub(super) cmd: Vec<String>,
     pub(super) logging: LoggingConfig,
+    pub(super) start_delay_ms: u64,
     pub(super) restart: RestartConfig,
 }
